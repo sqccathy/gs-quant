@@ -21,7 +21,7 @@ from enum import Enum
 from functools import partial, reduce
 from pydash import get
 from time import sleep
-from typing import List, Optional, Union
+from typing import Dict, List, Optional, Union
 
 from gs_quant.api.gs.assets import AssetClass, GsAssetApi
 from gs_quant.api.gs.data import GsDataApi
@@ -31,6 +31,9 @@ from gs_quant.base import EnumBase
 from gs_quant.datetime.date import prev_business_date
 from gs_quant.session import GsSession
 from gs_quant.target.data import DataQuery
+
+
+QUERY_LIMIT = 1000
 
 
 class BasketType(EnumBase, Enum):
@@ -102,13 +105,15 @@ class IndicesDatasets(EnumBase, Enum):
     """ Indices Datasets """
     BASKET_FUNDAMENTALS = 'BASKET_FUNDAMENTALS'
     COMPOSITE_THEMATIC_BETAS = 'COMPOSITE_THEMATIC_BETAS'
-    THEMATIC_FACTOR_BETAS_V1_STANDARD = 'THEMATIC_FACTOR_BETAS_V1_STANDARD'
+    CREDIT_EOD_PRICING_V1_STANDARD = 'CREDIT_EOD_PRICING_V1_STANDARD'
     CORPORATE_ACTIONS = 'CA'
     GIRBASKETCONSTITUENTS = 'GIRBASKETCONSTITUENTS'
     GSBASKETCONSTITUENTS = 'GSBASKETCONSTITUENTS'
     GSCB_FLAGSHIP = 'GSCB_FLAGSHIP'
+    GSCREDITBASKETCONSTITUENTS = 'GSCREDITBASKETCONSTITUENTS'
     STS_FUNDAMENTALS = 'STS_FUNDAMENTALS'
     STS_INDICATIVE_LEVELS = 'STS_INDICATIVE_LEVELS'
+    THEMATIC_FACTOR_BETAS_STANDARD = 'THEMATIC_FACTOR_BETAS_V2_STANDARD'
 
     def __repr__(self):
         return self.value
@@ -242,12 +247,44 @@ def get_my_baskets(user_id: str = None) -> Optional[pd.DataFrame]:
         return pd.DataFrame(my_baskets)
 
 
+def __get_baskets(fields: List[str] = [],
+                  basket_type: List[BasketType] = BasketType.to_list(),
+                  asset_class: List[AssetClass] = [AssetClass.Equity],
+                  region: List[Region] = None,
+                  styles: List[Union[CustomBasketStyles, ResearchBasketStyles]] = None,
+                  as_of: dt.datetime = None,
+                  **kwargs) -> Dict:
+    default_fields = set(['id', 'name', 'ticker', 'region', 'type', 'description', 'styles', 'liveDate', 'assetClass'])
+    query, fields = {}, list(set(fields).union(default_fields))
+    for k, v in kwargs.items():
+        query[k] = v
+    if region:
+        query['region'] = region
+    if styles:
+        query['styles'] = styles
+    query = dict(fields=fields, type=basket_type, asset_class=asset_class, is_pair_basket=[False],
+                 flagship=[True], **query)
+    return GsAssetApi.get_many_assets_data_scroll(**query, as_of=as_of, limit=QUERY_LIMIT, scroll='1m')
+
+
+def __get_dataset_id(asset_class: AssetClass, basket_type: BasketType, data_type: str) -> str:
+    if asset_class == AssetClass.Equity or asset_class == AssetClass.Equity.value:
+        if data_type == 'price':
+            return IndicesDatasets.GSCB_FLAGSHIP.value
+        elif basket_type == BasketType.CUSTOM_BASKET or basket_type == BasketType.CUSTOM_BASKET.value:
+            return IndicesDatasets.GSBASKETCONSTITUENTS.value
+        else:
+            return IndicesDatasets.GIRBASKETCONSTITUENTS.value
+    raise NotImplementedError(f'{data_type} data for {asset_class} baskets is unsupported at this time')
+
+
 def get_flagship_baskets(fields: List[str] = [],
                          basket_type: List[BasketType] = BasketType.to_list(),
                          asset_class: List[AssetClass] = [AssetClass.Equity],
                          region: List[Region] = None,
                          styles: List[Union[CustomBasketStyles, ResearchBasketStyles]] = None,
-                         as_of: dt.datetime = None) -> pd.DataFrame:
+                         as_of: dt.datetime = None,
+                         **kwargs) -> pd.DataFrame:
     """
     Retrieve flagship baskets
 
@@ -276,14 +313,8 @@ def get_flagship_baskets(fields: List[str] = [],
 
     :func:`get_flagships_with_assets` :func:`get_flagships_performance` :func:`get_flagships_constituents`
     """
-    fields = list(set(fields).union(set(['id', 'name', 'ticker', 'region', 'type', 'description',
-                                         'styles', 'liveDate', 'assetClass'])))
-    query = dict(fields=fields, type=basket_type, asset_class=asset_class, is_pair_basket=[False], flagship=[True])
-    if region is not None:
-        query.update(region=region)
-    if styles is not None:
-        query.update(styles=styles)
-    response = GsAssetApi.get_many_assets_data_scroll(**query, as_of=as_of, limit=2000, scroll='1m')
+    response = __get_baskets(fields=fields, as_of=as_of, basket_type=basket_type, asset_class=asset_class,
+                             region=region, styles=styles, **kwargs)
     return pd.DataFrame(response)
 
 
@@ -293,7 +324,8 @@ def get_flagships_with_assets(identifiers: List[str],
                               asset_class: List[AssetClass] = [AssetClass.Equity],
                               region: List[Region] = None,
                               styles: List[Union[CustomBasketStyles, ResearchBasketStyles]] = None,
-                              as_of: dt.datetime = None) -> pd.DataFrame:
+                              as_of: dt.datetime = None,
+                              **kwargs) -> pd.DataFrame:
     """
     Retrieve a list of flagship baskets containing specified assets
 
@@ -323,17 +355,10 @@ def get_flagships_with_assets(identifiers: List[str],
 
     :func:`get_flagship_baskets` :func:`get_flagships_performance` :func:`get_flagships_constituents`
     """
-    fields = list(set(fields).union(set(['id', 'name', 'ticker', 'region', 'type', 'description',
-                                         'styles', 'liveDate', 'assetClass'])))
     response = GsAssetApi.resolve_assets(identifier=identifiers, fields=['id'], limit=1)
     mqids = [get(asset, '0.id') for asset in response.values()]
-    query = dict(fields=fields, type=basket_type, asset_class=asset_class, is_pair_basket=[False],
-                 flagship=[True], underlying_asset_ids=mqids)
-    if region is not None:
-        query.update(region=region)
-    if styles is not None:
-        query.update(styles=styles)
-    response = GsAssetApi.get_many_assets_data_scroll(**query, as_of=as_of, limit=2000, scroll='1m')
+    response = __get_baskets(fields=fields, as_of=as_of, basket_type=basket_type, asset_class=asset_class,
+                             region=region, styles=styles, underlying_asset_ids=mqids, **kwargs)
     return pd.DataFrame(response)
 
 
@@ -343,7 +368,8 @@ def get_flagships_performance(fields: List[str] = [],
                               region: List[Region] = None,
                               styles: List[Union[CustomBasketStyles, ResearchBasketStyles]] = None,
                               start: dt.date = None,
-                              end: dt.date = None,) -> pd.DataFrame:
+                              end: dt.date = None,
+                              **kwargs) -> pd.DataFrame:
     """
     Retrieve performance data for flagship baskets
 
@@ -373,31 +399,24 @@ def get_flagships_performance(fields: List[str] = [],
 
     :func:`get_flagships_with_assets` :func:`get_flagship_baskets` :func:`get_flagships_constituents`
     """
-    start = start or prev_business_date()
-    end = end or prev_business_date()
-    fields = list(set(fields).union(set(['name', 'region', 'type', 'flagship', 'isPairBasket',
-                                         'styles', 'liveDate', 'assetClass'])))
-    coverage = GsDataApi.get_coverage(dataset_id=IndicesDatasets.GSCB_FLAGSHIP.value, fields=fields)
-    basket_regions = [] if region is None else [r.value for r in region]
-    basket_styles = [] if styles is None else [s.value for s in styles]
-    basket_types = [b_type.value for b_type in basket_type]
-    baskets_map = {}
-    for basket in coverage:
-        if get(basket, 'flagship') is False or get(basket, 'isPairBasket') is True or \
-            region is not None and get(basket, 'region') not in basket_regions or \
-                get(basket, 'type') not in basket_types or \
-                get(basket, 'assetClass') not in [a.value for a in asset_class] or \
-                styles is not None and not any(s in get(basket, 'styles', []) for s in basket_styles):
-            continue
-        baskets_map[get(basket, 'assetId')] = basket
-    response = GsDataApi.query_data(query=DataQuery(where=dict(assetId=list(baskets_map.keys())),
-                                    startDate=start, endDate=end), dataset_id=IndicesDatasets.GSCB_FLAGSHIP.value)
-    performance = []
-    for basket in response:
-        basket_data = baskets_map[get(basket, 'assetId')]
-        basket_data.update(closePrice=get(basket, 'closePrice'))
-        basket_data.update(date=get(basket, 'date'))
-        performance.append(basket_data)
+    start, end = start or prev_business_date(), end or prev_business_date()
+    assets = __get_baskets(fields=fields, basket_type=basket_type, asset_class=asset_class, region=region,
+                           styles=styles, **kwargs)
+    baskets = {b.get('id'): b for b in assets}
+    dataset_id = __get_dataset_id(asset_class=asset_class[0], basket_type=basket_type[0], data_type='price')
+    coverage = GsDataApi.get_coverage(dataset_id=dataset_id, fields=['id'])
+    mqids = [b.get('assetId') for b in coverage if b.get('assetId') in baskets.keys()]
+    batches = [mqids[i * 500:(i + 1) * 500] for i in range((len(mqids) + 500 - 1) // 500)]
+    response, performance = [], []
+    for b in batches:
+        response += GsDataApi.query_data(query=DataQuery(where={'assetId': b}, startDate=start, endDate=end),
+                                         dataset_id=dataset_id)
+    for b in response:
+        data = baskets.get(b.get('assetId'))
+        b.update(data)
+        b.pop('assetId')
+        b.pop('updateTime')
+        performance.append(b)
     return pd.DataFrame(performance)
 
 
@@ -407,7 +426,8 @@ def get_flagships_constituents(fields: List[str] = [],
                                region: List[Region] = None,
                                styles: List[Union[CustomBasketStyles, ResearchBasketStyles]] = None,
                                start: dt.date = None,
-                               end: dt.date = None,) -> pd.DataFrame:
+                               end: dt.date = None,
+                               **kwargs) -> pd.DataFrame:
     """
     Retrieve flagship baskets constituents
 
@@ -437,41 +457,31 @@ def get_flagships_constituents(fields: List[str] = [],
 
     :func:`get_flagships_with_assets` :func:`get_flagships_performance` :func:`get_flagship_baskets`
     """
-    start = start or prev_business_date()
-    end = end or prev_business_date()
+    start, end = start or prev_business_date(), end or prev_business_date()
     basket_fields = list(set(fields).union(set(['id', 'name', 'ticker', 'region', 'type', 'styles',
-                                                'liveDate', 'assetClass'])))
-    fields = list(set(fields).union(set(['id', 'name'])))
-    query = dict(fields=basket_fields, type=basket_type, asset_class=asset_class,
-                 is_pair_basket=[False], flagship=[True])
-    if region is not None:
-        query.update(region=region)
-    if styles is not None:
-        query.update(styles=styles)
+                                               'liveDate', 'assetClass'])))
+    fields = list(set(fields).union(set(['id'])))
+    response = __get_baskets(fields=['id'], basket_type=basket_type, asset_class=asset_class,
+                             region=region, styles=styles, **kwargs)
+    basket_ids = [b.get('id') for b in response]
+    cov_dataset_id = __get_dataset_id(asset_class=asset_class[0], basket_type=basket_type[0], data_type='price')
+    coverage = GsDataApi.get_coverage(dataset_id=cov_dataset_id, fields=basket_fields, include_history=True)
+    basket_map = {b['assetId']: {**b, 'constituents': []} for b in coverage if b['assetId'] in basket_ids}
 
-    coverage_results = ThreadPoolManager.run_async([
-        partial(GsAssetApi.get_many_assets_data_scroll, **query, limit=2000, scroll='1m'),
-        partial(GsDataApi.get_coverage, dataset_id=IndicesDatasets.GSCB_FLAGSHIP.value, fields=basket_fields,
-                include_history=True)
-    ])
-    basket_data, coverage = coverage_results[0], coverage_results[1]
-    all_ids = set([b['id'] for b in basket_data])
-    basket_map = {b['assetId']: {**b, 'constituents': []} for b in coverage if b['assetId'] in all_ids}
-    cbs = [b['assetId'] for b in basket_map.values() if b['type'] == BasketType.CUSTOM_BASKET.value]
-    rbs = [b['assetId'] for b in basket_map.values() if b['type'] == BasketType.RESEARCH_BASKET.value]
+    basket_dataset_query_map, constituents_data, tasks = {}, [], []
+    # get appropriate dataset for each basket
+    for b in basket_map.values():
+        dataset_id = __get_dataset_id(asset_class=b['assetClass'], basket_type=b['type'], data_type='constituents')
+        if dataset_id:
+            basket_dataset_query_map[dataset_id] = basket_dataset_query_map.get(dataset_id, []) + [b['assetId']]
 
-    constituents_data, tasks = [], []
     # query constituents in batches of 25
-    cb_batches = [cbs[i * 25:(i + 1) * 25] for i in range((len(cbs) + 25 - 1) // 25)]
-    rb_batches = [rbs[i * 25:(i + 1) * 25] for i in range((len(rbs) + 25 - 1) // 25)]
-    for batch in cb_batches:
-        tasks.append(partial(GsDataApi.query_data,
-                             query=DataQuery(where={'assetId': batch}, startDate=start, endDate=end),
-                             dataset_id=IndicesDatasets.GSBASKETCONSTITUENTS.value))
-    for batch in rb_batches:
-        tasks.append(partial(GsDataApi.query_data,
-                             query=DataQuery(where={'assetId': batch}, startDate=start, endDate=end),
-                             dataset_id=IndicesDatasets.GIRBASKETCONSTITUENTS.value))
+    for ds, ids in basket_dataset_query_map.items():
+        batches = [ids[i * 25:(i + 1) * 25] for i in range((len(ids) + 25 - 1) // 25)]
+        for batch in batches:
+            tasks.append(partial(GsDataApi.query_data,
+                                 query=DataQuery(where={'assetId': batch}, startDate=start, endDate=end),
+                                 dataset_id=ds))
 
     # run 5 parallel dataset queries at a time
     tasks = [tasks[i * 5:(i + 1) * 5] for i in range((len(tasks) + 5 - 1) // 5)]
@@ -482,7 +492,7 @@ def get_flagships_constituents(fields: List[str] = [],
 
     # fetch asset positions data
     asset_ids = set([row['underlyingAssetId'] for row in constituents_data])
-    asset_data = GsAssetApi.get_many_assets_data_scroll(id=asset_ids, fields=fields, limit=2000, scroll='1m')
+    asset_data = GsAssetApi.get_many_assets_data_scroll(id=asset_ids, fields=fields, limit=QUERY_LIMIT, scroll='1m')
     asset_data_map = {get(asset, 'id'): asset for asset in asset_data}
 
     for row in constituents_data:
@@ -494,3 +504,40 @@ def get_flagships_constituents(fields: List[str] = [],
         basket_map[basket_id]['constituents'].append(row)
 
     return pd.DataFrame([r for r in basket_map.values() if r is not None])
+
+
+def get_constituents_dataset_coverage(basket_type: BasketType = BasketType.CUSTOM_BASKET,
+                                      asset_class: AssetClass = AssetClass.Equity,
+                                      as_of: dt.datetime = None) -> pd.DataFrame:
+    """
+    Retrieve a list of baskets covered by constituents datasets
+
+    :param basket_type: Basket type
+    :param asset_class: Asset class (defaults to Equity)
+    :param as_of: Date for which to retrieve coverage
+    :return: baskets covered by the constituents dataset
+
+    **Usage**
+
+    Retrieve a list of baskets covered by constituents datasets
+
+    **Examples**
+
+    Retrieve basket constituent dataset coverage
+
+    >>> from gs_quant.markets.indices_utils import *
+    >>>
+    >>> GSBASKETCONSTITUENTS_COVERAGE = get_constituents_dataset_coverage()
+    >>> GIRBASKETCONSTITUENTS_COVERAGE = get_constituents_dataset_coverage(basket_type=BasketType.RESEARCH_BASKET)
+    >>> GSCREDITBASKETCONSTITUENTS_COVERAGE = get_constituents_dataset_coverage(asset_class=AssetClass.Credit)
+
+    **See also**
+
+    :func:`get_flagships_constituents`
+    """
+    query = dict(fields=['id', 'name', 'region', 'ticker', 'type', 'assetClass'], type=[basket_type],
+                 asset_class=[asset_class], is_pair_basket=[False], listed=[True])
+    if asset_class != AssetClass.Equity:
+        query.pop('is_pair_basket')
+    response = GsAssetApi.get_many_assets_data_scroll(**query, as_of=as_of, limit=QUERY_LIMIT, scroll='1m')
+    return pd.DataFrame(response)

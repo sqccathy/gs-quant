@@ -77,6 +77,14 @@ class HedgerConstraintPrioritySetting(EnumBase, Enum):
     _5 = '5'    
 
 
+class SamplingPeriod(EnumBase, Enum):    
+    
+    """The length of time in between return samples."""
+
+    Daily = 'Daily'
+    Weekly = 'Weekly'    
+
+
 @handle_camel_case_args
 @dataclass_json(letter_case=LetterCase.CAMEL)
 @dataclass(unsafe_hash=True, repr=False)
@@ -85,6 +93,10 @@ class AssetConstraint(Base):
     max_: float = field(default=None, metadata=config(field_name='max', exclude=exclude_none))
     min_: float = field(default=None, metadata=config(field_name='min', exclude=exclude_none))
     name: Optional[str] = field(default=None, metadata=name_metadata)
+
+
+class BasketConditions(DictBase):
+    pass
 
 
 @handle_camel_case_args
@@ -121,6 +133,15 @@ class FactorConstraint(Base):
 class FactorExposure(Base):
     factor: str = field(default=None, metadata=field_metadata)
     exposure: float = field(default=None, metadata=field_metadata)
+    name: Optional[str] = field(default=None, metadata=name_metadata)
+
+
+@handle_camel_case_args
+@dataclass_json(letter_case=LetterCase.CAMEL)
+@dataclass(unsafe_hash=True, repr=False)
+class FactorMCTRByGroupConstraint(Base):
+    factors: Tuple[str, ...] = field(default=None, metadata=field_metadata)
+    max_: float = field(default=None, metadata=config(field_name='max', exclude=exclude_none))
     name: Optional[str] = field(default=None, metadata=name_metadata)
 
 
@@ -322,13 +343,18 @@ class FactorHedgeParameters(Base):
     explode_universe: Optional[bool] = field(default=None, metadata=field_metadata)
     min_names: Optional[float] = field(default=None, metadata=field_metadata)
     max_names: Optional[float] = field(default=None, metadata=field_metadata)
+    max_trades: Optional[float] = field(default=None, metadata=field_metadata)
     min_weight: Optional[float] = field(default=None, metadata=field_metadata)
     max_weight: Optional[float] = field(default=None, metadata=field_metadata)
     min_market_cap: Optional[float] = field(default=None, metadata=field_metadata)
     max_market_cap: Optional[float] = field(default=None, metadata=field_metadata)
+    max_factor_mctr: Optional[float] = field(default=None, metadata=config(field_name='maxFactorMCTR', exclude=exclude_none))
+    max_factor_mctr_by_group: Optional[Tuple[FactorMCTRByGroupConstraint, ...]] = field(default=None, metadata=config(field_name='maxFactorMCTRByGroup', exclude=exclude_none))
     market_participation_rate: Optional[float] = field(default=10, metadata=field_metadata)
     asset_constraints: Optional[Tuple[AssetConstraint, ...]] = field(default=None, metadata=field_metadata)
     constrain_assets_by_notional: Optional[bool] = field(default=None, metadata=field_metadata)
+    allow_long_short: Optional[bool] = field(default=None, metadata=field_metadata)
+    only_reweight_target_composition: Optional[bool] = field(default=None, metadata=field_metadata)
     factor_constraints: Optional[Tuple[FactorConstraint, ...]] = field(default=None, metadata=field_metadata)
     classification_constraints: Optional[Tuple[ClassificationConstraint, ...]] = field(default=None, metadata=field_metadata)
     esg_constraints: Optional[Tuple[ESGConstraint, ...]] = field(default=None, metadata=field_metadata)
@@ -336,6 +362,8 @@ class FactorHedgeParameters(Base):
     comparisons: Optional[Tuple[HedgerComparison, ...]] = field(default=None, metadata=field_metadata)
     turnover_portfolio_id: Optional[str] = field(default=None, metadata=field_metadata)
     max_turnover_percentage: Optional[float] = field(default=None, metadata=field_metadata)
+    return_type: Optional[ReturnType] = field(default=None, metadata=field_metadata)
+    is_best_basket: Optional[bool] = field(default=None, metadata=field_metadata)
     name: Optional[str] = field(default=None, metadata=name_metadata)
 
 
@@ -350,7 +378,7 @@ class PerformanceHedgeParameters(Base):
     observation_end_date: datetime.date = field(default=None, metadata=field_metadata)
     backtest_start_date: Optional[datetime.date] = field(default=None, metadata=field_metadata)
     backtest_end_date: Optional[datetime.date] = field(default=None, metadata=field_metadata)
-    sampling_period: Optional[str] = field(default='Weekly', metadata=field_metadata)
+    sampling_period: Optional[SamplingPeriod] = field(default=SamplingPeriod.Weekly, metadata=field_metadata)
     max_leverage: Optional[float] = field(default=None, metadata=field_metadata)
     percentage_in_cash: Optional[float] = field(default=None, metadata=field_metadata)
     explode_universe: Optional[bool] = field(default=None, metadata=field_metadata)
@@ -372,6 +400,7 @@ class PerformanceHedgeParameters(Base):
     use_machine_learning: Optional[bool] = field(default=False, metadata=field_metadata)
     lasso_weight: Optional[float] = field(default=None, metadata=field_metadata)
     ridge_weight: Optional[float] = field(default=None, metadata=field_metadata)
+    return_type: Optional[ReturnType] = field(default=None, metadata=field_metadata)
     name: Optional[str] = field(default=None, metadata=name_metadata)
 
 

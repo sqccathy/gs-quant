@@ -75,7 +75,7 @@ class FredDataApi(DataApi):
         """
 
         if start is not None and end is not None:
-            if type(start) != type(end):
+            if type(start) is not type(end):
                 raise ValueError('Start and end types must match!')
 
         request = FredQuery(observation_start=start, observation_end=end, realtime_end=as_of, realtime_start=since)
@@ -130,7 +130,8 @@ class FredDataApi(DataApi):
         data = data.sort_index()
         return data
 
-    def construct_dataframe_with_types(self, dataset_id: str, data: pd.Series) -> pd.DataFrame:
+    def construct_dataframe_with_types(self, dataset_id: str, data: pd.Series, schema_varies=False,
+                                       standard_fields=False) -> pd.DataFrame:
         """
         Constructs a dataframe with correct date types.
 

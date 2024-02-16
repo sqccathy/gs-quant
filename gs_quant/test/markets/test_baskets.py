@@ -101,7 +101,7 @@ def test_basket_error_messages(mocker):
 
     # test non internal errors
     with pytest.raises(MqError, match=ErrorMessage.NON_INTERNAL.value):
-        basket.flagship
+        basket.flagship = False
 
     # test unmodifiable errors
     with pytest.raises(MqError, match=ErrorMessage.UNMODIFIABLE.value):
@@ -248,7 +248,7 @@ def test_basket_update_entitlements(mocker):
     mock_response(mocker, GsAssetApi, 'update_asset_entitlements', entitlements_response)
     response = basket.update()
     GsAssetApi.update_asset_entitlements.assert_called()
-    assert response == entitlements_response.as_dict()
+    assert response == entitlements_response
 
 
 def test_upload_position_history(mocker):

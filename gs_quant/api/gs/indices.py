@@ -44,18 +44,10 @@ class GsIndexApi:
         ISelectActionRequest: ISelectResponse
     }
 
-    @staticmethod
-    def _validate_payload(payload: ValidatedRequest) -> ValidatedRequest:
-        """Target generator defaults fields with only one enum value causing failures"""
-        if type(payload) in [CustomBasketsCreateInputs, CustomBasketsRebalanceInputs]:
-            payload.pricing_parameters.asset_overwrite_data_set_id = None
-        return payload
-
     @classmethod
     def create(cls, inputs: CreateRequest) -> CreateRepsonse:
         """ Create new basket or iselect strategy """
         response_cls = cls._response_cls[type(inputs)]
-        inputs = cls._validate_payload(inputs)
         return GsSession.current._post('/indices', payload=inputs, cls=response_cls)
 
     @classmethod
@@ -70,7 +62,6 @@ class GsIndexApi:
         """ Rebalance existing index with new composition """
         url = f'/indices/{id_}/rebalance'
         response_cls = cls._response_cls[type(inputs)]
-        inputs = cls._validate_payload(inputs)
         inputs = IndicesRebalanceInputs(parameters=inputs) if not isinstance(inputs, ISelectRequest) else inputs
         return GsSession.current._post(url, payload=inputs, cls=response_cls)
 
@@ -110,7 +101,7 @@ class GsIndexApi:
         """ Backcast basket composition history before live date """
         url = f'/indices/{_id}/backcast'
         inputs = IndicesBackcastInputs(parameters=inputs)
-        return GsSession.current._post(url, payload=inputs, cls=CustomBasketsResponse)
+        return GsSession.current._post(url, payload=inputs, cls=CustomBasketsResponse, timeout=240)
 
     @classmethod
     def update_risk_reports(cls, _id: str, inputs: CustomBasketRiskParams):
@@ -137,6 +128,26 @@ class GsIndexApi:
 
         if position_type is not None:
             url += '&type=' + position_type.value
+
+        results = GsSession.current._get(url)['results']
+        return results
+
+    @staticmethod
+    def get_last_positions_data(
+            asset_id: str,
+            fields: IdList = None,
+            position_type: PositionType = None,
+    ) -> List[dict]:
+        url = f'/indices/{asset_id}/positions/last/data'
+        params = ''
+        if fields is not None:
+            params += '&fields='.join([''] + fields)
+
+        if position_type is not None:
+            params += '&type=' + position_type.value
+
+        if len(params):
+            url = f'{url}?{params}'
 
         results = GsSession.current._get(url)['results']
         return results

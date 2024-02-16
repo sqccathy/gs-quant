@@ -17,11 +17,11 @@ import datetime as dt
 import logging
 import urllib.parse
 from enum import Enum
-from typing import Tuple, List
+from typing import Tuple, List, Dict
 
 from gs_quant.base import EnumBase
 from gs_quant.session import GsSession
-from gs_quant.target.common import Currency
+from gs_quant.target.common import Currency, PositionTag
 from gs_quant.target.reports import Report
 
 _logger = logging.getLogger(__name__)
@@ -57,7 +57,7 @@ class GsReportApi:
     @classmethod
     def get_reports(cls, limit: int = 100, offset: int = None, position_source_type: str = None,
                     position_source_id: str = None, status: str = None, report_type: str = None,
-                    order_by: str = None) -> Tuple[Report, ...]:
+                    order_by: str = None, tags: Dict = None) -> Tuple[Report, ...]:
         url = '/reports?limit={limit}'.format(limit=limit)
         if offset is not None:
             url += '&offset={offset}'.format(offset=offset)
@@ -71,7 +71,11 @@ class GsReportApi:
             url += '&reportType={report_type}'.format(report_type=urllib.parse.quote(report_type))
         if order_by is not None:
             url += '&orderBy={order_by}'.format(order_by=order_by)
-        return GsSession.current._get(url, cls=Report)['results']
+        results = GsSession.current._get(url, cls=Report)['results']
+        if tags is not None:
+            tags_as_list = tuple(PositionTag(name=key, value=tags[key]) for key in tags)
+            results = [r for r in results if r.parameters.tags == tags_as_list]
+        return results
 
     @classmethod
     def update_report(cls, report: Report) -> dict:
@@ -104,6 +108,10 @@ class GsReportApi:
         return GsSession.current._get('/reports/jobs/{report_job_id}'.format(report_job_id=report_job_id))
 
     @classmethod
+    def reschedule_report_job(cls, report_job_id: str):
+        return GsSession.current._post(f'/reports/jobs/{report_job_id}/reschedule', {})
+
+    @classmethod
     def cancel_report_job(cls, report_job_id: str) -> dict:
         return GsSession.current._post('/reports/jobs/{report_job_id}/cancel'.format(report_job_id=report_job_id))
 
@@ -114,6 +122,29 @@ class GsReportApi:
         }
         return GsSession.current._post('/reports/jobs/{report_job_id}/update'.format(report_job_id=report_job_id),
                                        status_body)
+
+    @classmethod
+    def get_custom_aum(cls,
+                       report_id: str,
+                       start_date: dt.date = None,
+                       end_date: dt.date = None) -> dict:
+        url = f'/reports/{report_id}/aum?'
+        if start_date:
+            url += f"&startDate={start_date.strftime('%Y-%m-%d')}"
+        if end_date:
+            url += f"&endDate={end_date.strftime('%Y-%m-%d')}"
+        return GsSession.current._get(url)['data']
+
+    @classmethod
+    def upload_custom_aum(cls,
+                          report_id: str,
+                          aum_data: List[dict],
+                          clear_existing_data: bool = None) -> dict:
+        url = f'/reports/{report_id}/aum'
+        payload = {'data': aum_data}
+        if clear_existing_data:
+            url += '?clearExistingData=true'
+        return GsSession.current._post(url, payload)
 
     @classmethod
     def get_factor_risk_report_results(cls,

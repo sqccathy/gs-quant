@@ -17,6 +17,7 @@ import datetime as dt
 import re
 from typing import Optional, Union, Iterable, Dict, Tuple
 
+from dataclasses_json import config
 from dateutil.parser import isoparse
 
 __valid_date_formats = ('%Y-%m-%d',  # '2020-07-28'
@@ -50,8 +51,17 @@ def optional_to_isodatetime(datetime: Optional[dt.datetime]):
     return f'{dt.datetime.isoformat(datetime, timespec="seconds")}Z' if datetime is not None else None
 
 
+optional_datetime_config = config(encoder=optional_to_isodatetime, decoder=optional_from_isodatetime)
+optional_date_config = config(encoder=encode_date_or_str, decoder=decode_optional_date)
+
+
 def decode_dict_date_key(value):
     return {dt.date.fromisoformat(d): v for d, v in value.items()} if value is not None else None
+
+
+def decode_dict_dict_date_key(value):
+    return {k: {dt.date.fromisoformat(d): v for d, v in val.items()} if val is not None else None
+            for k, val in value.items()} if value is not None else None
 
 
 def decode_dict_date_value(value):
@@ -154,6 +164,16 @@ def decode_custom_comment(value: Optional[dict]):
 def decode_custom_comments(value: Optional[Iterable[Dict]]):
     from gs_quant.quote_reports.core import custom_comments_from_dicts
     return custom_comments_from_dicts(value) if value else None
+
+
+def decode_hedge_type(value: Optional[dict]):
+    from gs_quant.quote_reports.core import hedge_type_from_dict
+    return hedge_type_from_dict(value) if value else None
+
+
+def decode_hedge_types(value: Optional[Iterable[Dict]]):
+    from gs_quant.quote_reports.core import hedge_type_from_dicts
+    return hedge_type_from_dicts(value) if value else None
 
 
 def encode_dictable(o):

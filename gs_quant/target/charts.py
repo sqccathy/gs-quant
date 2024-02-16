@@ -47,6 +47,14 @@ class ChartAnnotationLineType(EnumBase, Enum):
     solid = 'solid'    
 
 
+class ChartAnnotationRangeLabelType(EnumBase, Enum):    
+    
+    """Type of the range label."""
+
+    withPct = 'withPct'
+    withoutPct = 'withoutPct'    
+
+
 class ChartAnnotationTextAlign(EnumBase, Enum):    
     
     """Alignment of the text."""
@@ -134,6 +142,7 @@ class ChartType(EnumBase, Enum):
     
     """Chart Type"""
 
+    bar = 'bar'
     line = 'line'
     scatter = 'scatter'    
 
@@ -143,6 +152,8 @@ class ChartType(EnumBase, Enum):
 @dataclass(unsafe_hash=True, repr=False)
 class ChartDisplaySettings(Base):
     scatter_fill: Optional[bool] = field(default=None, metadata=field_metadata)
+    bar_chart_type: Optional[str] = field(default=None, metadata=field_metadata)
+    bar_padding: Optional[float] = field(default=None, metadata=field_metadata)
     name: Optional[str] = field(default=None, metadata=name_metadata)
 
 
@@ -200,7 +211,9 @@ class ParameterField(Base):
 @dataclass(unsafe_hash=True, repr=False)
 class XAxisSettings(Base):
     auto_fit_range_to_data: Optional[bool] = field(default=None, metadata=field_metadata)
+    label: Optional[str] = field(default=None, metadata=field_metadata)
     show_grid_lines: Optional[bool] = field(default=None, metadata=field_metadata)
+    ignore_nil_date: Optional[bool] = field(default=None, metadata=field_metadata)
     x_axis_date_format: Optional[str] = field(default=None, metadata=field_metadata)
     name: Optional[str] = field(default=None, metadata=name_metadata)
 
@@ -217,6 +230,7 @@ class YAxisSettings(Base):
     min_: Optional[int] = field(default=None, metadata=config(field_name='min', exclude=exclude_none))
     show_grid_lines: Optional[bool] = field(default=None, metadata=field_metadata)
     hide: Optional[bool] = field(default=None, metadata=field_metadata)
+    invert_axis: Optional[bool] = field(default=None, metadata=field_metadata)
     name: Optional[str] = field(default=None, metadata=name_metadata)
 
 
@@ -242,12 +256,17 @@ class ChartAnnotation(Base):
     line_type: Optional[ChartAnnotationLineType] = field(default=None, metadata=field_metadata)
     line_width: Optional[float] = field(default=None, metadata=field_metadata)
     radius: Optional[float] = field(default=None, metadata=field_metadata)
+    range_label_type: Optional[ChartAnnotationRangeLabelType] = field(default=None, metadata=field_metadata)
     text_align: Optional[ChartAnnotationTextAlign] = field(default=None, metadata=field_metadata)
     text_decoration: Optional[ChartAnnotationTextDecoration] = field(default=None, metadata=field_metadata)
     text_width: Optional[float] = field(default=None, metadata=field_metadata)
     text_height: Optional[float] = field(default=None, metadata=field_metadata)
     y_axis_index: Optional[float] = field(default=None, metadata=field_metadata)
     name: Optional[str] = field(default=None, metadata=name_metadata)
+
+
+class ChartControls(DictBase):
+    pass
 
 
 @handle_camel_case_args
@@ -282,6 +301,7 @@ class ChartRegression(Base):
     type_: Optional[ChartRegressionType] = field(default=None, metadata=config(field_name='type', exclude=exclude_none))
     line_data_index: Optional[int] = field(default=None, metadata=field_metadata)
     is_visible: Optional[bool] = field(default=None, metadata=field_metadata)
+    show_statistical_info: Optional[bool] = field(default=None, metadata=field_metadata)
     stroke_color: Optional[str] = field(default=None, metadata=field_metadata)
     stroke_type: Optional[ChartRegressionStrokeType] = field(default=None, metadata=field_metadata)
     stroke_width: Optional[float] = field(default=None, metadata=field_metadata)
@@ -306,6 +326,7 @@ class TemplateVariable(Base):
     display_name: str = field(default=None, metadata=field_metadata)
     constructor_type: str = field(default=None, metadata=field_metadata)
     parameters: ConstructorParameter = field(default=None, metadata=field_metadata)
+    default_value: Optional[Union[float, str]] = field(default=None, metadata=field_metadata)
     hide: Optional[bool] = field(default=False, metadata=field_metadata)
     tooltip: Optional[str] = field(default=None, metadata=field_metadata)
 
@@ -323,6 +344,8 @@ class Chart(Base):
     last_updated_time: Optional[datetime.datetime] = field(default=None, metadata=field_metadata)
     entitlements: Optional[Entitlements] = field(default=None, metadata=field_metadata)
     entitlement_exclusions: Optional[EntitlementExclusions] = field(default=None, metadata=field_metadata)
+    title: Optional[str] = field(default=None, metadata=field_metadata)
+    subtitle: Optional[str] = field(default=None, metadata=field_metadata)
     rank: Optional[int] = field(default=None, metadata=field_metadata)
     folder_name: Optional[str] = field(default=None, metadata=field_metadata)
     description: Optional[str] = field(default=None, metadata=field_metadata)
@@ -332,6 +355,7 @@ class Chart(Base):
     chart_properties: Optional[Tuple[ChartProperties, ...]] = field(default=None, metadata=field_metadata)
     regression_properties: Optional[Tuple[ChartRegression, ...]] = field(default=None, metadata=field_metadata)
     real_time: Optional[bool] = field(default=None, metadata=field_metadata)
+    show_controls_toolbar: Optional[bool] = field(default=None, metadata=field_metadata)
     interval: Optional[str] = field(default=None, metadata=field_metadata)
     relative_start_date: Optional[str] = field(default=None, metadata=field_metadata)
     relative_end_date: Optional[str] = field(default=None, metadata=field_metadata)
@@ -352,3 +376,5 @@ class Chart(Base):
     y_axes_settings: Optional[Tuple[YAxisSettings, ...]] = field(default=None, metadata=field_metadata)
     annotations: Optional[Tuple[ChartAnnotation, ...]] = field(default=None, metadata=field_metadata)
     template_variables: Optional[DictBase] = field(default=None, metadata=field_metadata)
+    parameters: Optional[ChartControls] = field(default=None, metadata=field_metadata)
+    controls: Optional[Tuple[DictBase, ...]] = field(default=None, metadata=field_metadata)

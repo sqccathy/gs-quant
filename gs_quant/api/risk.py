@@ -13,17 +13,20 @@ KIND, either express or implied.  See the License for the
 specific language governing permissions and limitations
 under the License.
 """
-from abc import ABCMeta, abstractmethod
 import asyncio
-from concurrent.futures import TimeoutError
 import itertools
 import logging
 import queue
 import sys
+from abc import ABCMeta, abstractmethod
+from concurrent.futures import TimeoutError
 from threading import Thread
-from tqdm import tqdm
 from typing import Iterable, Optional, Union, Tuple
 
+from opentracing import Span
+from tqdm import tqdm
+
+from gs_quant.api.api_session import ApiWithCustomSession
 from gs_quant.base import RiskKey, Sentinel
 from gs_quant.risk import ErrorValue, RiskRequest
 from gs_quant.risk.result_handlers import result_handlers
@@ -33,14 +36,14 @@ from gs_quant.tracing import Tracer
 _logger = logging.getLogger(__name__)
 
 
-class RiskApi(metaclass=ABCMeta):
-
+class RiskApi(ApiWithCustomSession, metaclass=ABCMeta):
     __SHUTDOWN_SENTINEL = Sentinel('QueueListenerShutdown')
 
     @classmethod
     @abstractmethod
     async def get_results(cls, responses: asyncio.Queue, results: asyncio.Queue,
-                          timeout: Optional[int] = None) -> Optional[str]:
+                          timeout: Optional[int] = None,
+                          span: Optional[Span] = None) -> Optional[str]:
         ...
 
     @classmethod
@@ -86,7 +89,7 @@ class RiskApi(metaclass=ABCMeta):
         try:
             elem = await asyncio.wait_for(q.get(), timeout=timeout) if timeout else await q.get()
             return cls.__handle_queue_update(q, elem)
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             return False, []
 
     @classmethod
@@ -181,14 +184,18 @@ class RiskApi(metaclass=ABCMeta):
             unprocessed_results = None
             results_handler = None
 
+            # determine session to use
+            session = cls.get_session()
+
             # The requests library (which we use for dispatching) is not async, so we need a thread for concurrency
             Thread(daemon=True,
                    target=execute_requests,
-                   args=(outstanding_requests, responses, raw_results, GsSession.current, loop, current_span)).start()
+                   args=(outstanding_requests, responses, raw_results, session, loop, current_span)).start()
 
             if is_async:
                 # If async we need a task to handle result subscription
-                results_handler = loop.create_task(cls.get_results(responses, raw_results, timeout=timeout))
+                results_handler = loop.create_task(
+                    cls.get_results(responses, raw_results, timeout=timeout, span=current_span))
 
             expected = sum(num_risk_jobs(r) for r in requests)
             received = 0

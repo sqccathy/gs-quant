@@ -17,6 +17,7 @@ import datetime as dt
 from enum import Enum, auto
 from time import sleep
 from typing import Tuple, Union, List, Dict
+import scipy.stats as st
 
 import pandas as pd
 from dateutil.relativedelta import relativedelta
@@ -33,6 +34,7 @@ from gs_quant.target.common import ReportParameters, Currency
 from gs_quant.target.coordinates import MDAPIDataBatchResponse
 from gs_quant.target.data import DataQuery, DataQueryResponse
 from gs_quant.target.reports import Report as TargetReport, ReportType, PositionSourceType, ReportStatus
+from gs_quant.target.portfolios import RiskAumSource
 
 
 class ReturnFormat(Enum):
@@ -73,6 +75,36 @@ class FactorRiskUnit(Enum):
 class AttributionAggregationType(Enum):
     Arithmetic = 'arithmetic'
     Geometric = 'geometric'
+
+
+class CustomAUMDataPoint:
+    """
+
+    Custom AUM Data Point represents a portfolio's AUM value for a specific date
+
+    """
+
+    def __init__(self,
+                 date: dt.date,
+                 aum: float):
+        self.__date = date
+        self.__aum = aum
+
+    @property
+    def date(self) -> dt.date:
+        return self.__date
+
+    @date.setter
+    def date(self, value: dt.date):
+        self.__date = value
+
+    @property
+    def aum(self) -> float:
+        return self.__aum
+
+    @aum.setter
+    def aum(self, value: float):
+        self.__aum = value
 
 
 class ReportJobFuture:
@@ -627,6 +659,93 @@ class PerformanceReport(Report):
         results = GsDataApi.query_data(query=query, dataset_id=ReportDataset.PPA_DATASET.value)
         return pd.DataFrame(results) if return_format == ReturnFormat.DATA_FRAME else results
 
+    def get_aum_source(self) -> RiskAumSource:
+        """
+        Get AUM Source for the portfolio associated with the performance report
+
+        :return: aum source
+        """
+        portfolio = GsPortfolioApi.get_portfolio(self.position_source_id)
+        return portfolio.aum_source if portfolio.aum_source is not None else RiskAumSource.Long
+
+    def set_aum_source(self,
+                       aum_source: RiskAumSource):
+        """
+        Set AUM Source for the portfolio associated with the performance report
+
+        :param aum_source: aum source for portfolio
+        :return: aum source
+        """
+        portfolio = GsPortfolioApi.get_portfolio(self.position_source_id)
+        portfolio.aum_source = aum_source
+        GsPortfolioApi.update_portfolio(portfolio)
+
+    def get_custom_aum(self,
+                       start_date: dt.date = None,
+                       end_date: dt.date = None) -> List[CustomAUMDataPoint]:
+        """
+        Get AUM data for performance report
+
+        :param start_date: start date
+        :param end_date: end date
+        :return: list of AUM data between the specified range
+        """
+        aum_data = GsReportApi.get_custom_aum(self.id, start_date, end_date)
+        return [CustomAUMDataPoint(date=dt.datetime.strptime(data['date'], '%Y-%m-%d'),
+                                   aum=data['aum']) for data in aum_data]
+
+    def get_aum(self,
+                start_date: dt.date,
+                end_date: dt.date):
+        """
+        Get AUM data for performance report
+
+        :param start_date: start date
+        :param end_date: end date
+        :return: dictionary of dates with corresponding AUM values
+        """
+        aum_source = self.get_aum_source()
+        if aum_source == RiskAumSource.Custom_AUM:
+            aum = self.get_custom_aum(start_date=start_date, end_date=end_date)
+            return {aum_point.date.strftime('%Y-%m-%d'): aum_point.aum for aum_point in aum}
+        if aum_source == RiskAumSource.Long:
+            aum = self.get_long_exposure(start_date=start_date, end_date=end_date)
+            return {row['date']: row['longExposure'] for index, row in aum.iterrows()}
+        if aum_source == RiskAumSource.Short:
+            aum = self.get_short_exposure(start_date=start_date, end_date=end_date)
+            return {row['date']: row['shortExposure'] for index, row in aum.iterrows()}
+        if aum_source == RiskAumSource.Gross:
+            aum = self.get_gross_exposure(start_date=start_date, end_date=end_date)
+            return {row['date']: row['grossExposure'] for index, row in aum.iterrows()}
+        if aum_source == RiskAumSource.Net:
+            aum = self.get_net_exposure(start_date=start_date, end_date=end_date)
+            return {row['date']: row['netExposure'] for index, row in aum.iterrows()}
+
+    def upload_custom_aum(self,
+                          aum_data: List[CustomAUMDataPoint],
+                          clear_existing_data: bool = None):
+        """
+        Add AUM data for portfolio corresponding to the performance report
+
+        :param aum_data: list of AUM data to upload
+        :param clear_existing_data: delete all previously uploaded AUM data for the portfolio (defaults to false)
+        """
+        formatted_aum_data = [{'date': data.date.strftime('%Y-%m-%d'), 'aum': data.aum} for data in aum_data]
+        GsReportApi.upload_custom_aum(self.id, formatted_aum_data, clear_existing_data)
+
+    def get_positions_data(self,
+                           start: dt.date = None,
+                           end: dt.date = dt.date.today(),
+                           fields: [str] = None,
+                           include_all_business_days: bool = False) -> List[Dict]:
+        return GsPortfolioApi.get_positions_data(self.position_source_id,
+                                                 start,
+                                                 end,
+                                                 fields,
+                                                 performance_report_id=self.id,
+                                                 include_all_business_days=include_all_business_days)
+        raise NotImplementedError
+
     def get_portfolio_constituents(self,
                                    fields: List[str] = None,
                                    start_date: dt.date = None,
@@ -653,6 +772,21 @@ class PerformanceReport(Report):
                    for query in queries]
         results = sum(results, [])
         return pd.DataFrame(results) if return_format == ReturnFormat.DATA_FRAME else results
+
+    def get_pnl_contribution(self,
+                             start_date: dt.date = None,
+                             end_date: dt.date = None,
+                             currency: Currency = None) -> pd.DataFrame:
+        """
+        Get PnL Contribution broken down by constituents
+
+        :param start_date: optional start date
+        :param end_date: optional end date
+        :param currency: optional currency; defaults to your portfolio's currency
+        :return: a Pandas DataFrame of results
+        """
+        return pd.DataFrame(GsPortfolioApi.get_attribution(self.position_source_id, start_date, end_date,
+                                                           currency, self.id))
 
     def get_brinson_attribution(self,
                                 benchmark: str = None,
@@ -749,11 +883,17 @@ class FactorRiskReport(Report):
         >>>     position_source_type=PositionSourceType.Portfolio
         >>> )
         """
-        super().__init__(report_id, name, position_source_id, position_source_type,
-                         report_type, ReportParameters(risk_model=risk_model_id,
-                                                       fx_hedged=fx_hedged,
-                                                       benchmark=benchmark_id), earliest_start_date,
-                         latest_end_date, latest_execution_time, status, percentage_complete)
+        if position_source_id and not position_source_type:
+            position_source_type = PositionSourceType.Portfolio if position_source_id.startswith('MP') else \
+                PositionSourceType.Asset
+
+        if position_source_type and not report_type:
+            report_type = ReportType.Portfolio_Factor_Risk if position_source_type is PositionSourceType.Portfolio \
+                else ReportType.Asset_Factor_Risk
+
+        super().__init__(report_id, name, position_source_id, position_source_type, report_type,
+                         ReportParameters(risk_model=risk_model_id, fx_hedged=fx_hedged, benchmark=benchmark_id),
+                         earliest_start_date, latest_end_date, latest_execution_time, status, percentage_complete)
 
     @classmethod
     def get(cls,
@@ -942,7 +1082,7 @@ class FactorRiskReport(Report):
             for column_group in column_info:
                 sorted_columns = sorted_columns + column_group.get('columns')
             rows_data_frame = pd.DataFrame(rows)
-            rows_data_frame = rows_data_frame[sorted_columns]
+            rows_data_frame = rows_data_frame.reindex(columns=sorted_columns)
             rows_data_frame = rows_data_frame.set_index('name')
             return rows_data_frame
         return table
@@ -1040,7 +1180,7 @@ class FactorRiskReport(Report):
         """
         Get historical annual risk
 
-        :param factor_names: optional list of factor names; must be from the following: "Factor", "Specific", "Total
+        :param factor_names: optional list of factor names; must be from the following: "Factor", "Specific", "Total"
         :param start_date: start date
         :param end_date: end date
         :param currency: currency
@@ -1061,7 +1201,7 @@ class FactorRiskReport(Report):
         """
         Get historical daily risk
 
-        :param factor_names: optional list of factor names; must be from the following: "Factor", "Specific", "Total
+        :param factor_names: optional list of factor names; must be from the following: "Factor", "Specific", "Total"
         :param start_date: start date
         :param end_date: end date
         :param currency: currency
@@ -1074,6 +1214,30 @@ class FactorRiskReport(Report):
                                        return_format=ReturnFormat.JSON)
         return _format_multiple_factor_table(factor_data, 'dailyRisk')
 
+    def get_ex_ante_var(self,
+                        confidence_interval: float = 95.0,
+                        start_date: dt.date = None,
+                        end_date: dt.date = None,
+                        currency: Currency = None) -> pd.DataFrame:
+        """
+        Get ex-ante Value at Risk as defined by the risk model
+
+        :param confidence_interval: the VaR confidence interval as a percent
+        :param start_date: start date
+        :param end_date: end date
+        :param currency: currency
+        :return: a Pandas DataFrame with the results
+        """
+        factor_data = self.get_results(factors=['Total'],
+                                       start_date=start_date,
+                                       end_date=end_date,
+                                       currency=currency,
+                                       return_format=ReturnFormat.JSON)
+        z_score = st.norm.ppf(confidence_interval / 100)
+        for data in factor_data:
+            data['var'] = data['dailyRisk'] * z_score
+        return _format_multiple_factor_table(factor_data, 'var')
+
 
 def _format_multiple_factor_table(factor_data: List[Dict],
                                   key: str) -> pd.DataFrame:
@@ -1084,7 +1248,7 @@ def _format_multiple_factor_table(factor_data: List[Dict],
             formatted_data[date][data['factor']] = data[key]
         else:
             formatted_data[date] = {
-                'date': date,
+                'Date': date,
                 data['factor']: data[key]
             }
 
@@ -1133,6 +1297,14 @@ class ThematicReport(Report):
         >>>     parameters=None
         >>> )
         """
+        if position_source_id and not position_source_type:
+            position_source_type = PositionSourceType.Portfolio if position_source_id.startswith('MP') else \
+                PositionSourceType.Asset
+
+        if position_source_type and not report_type:
+            report_type = ReportType.Portfolio_Thematic_Analytics if position_source_type is \
+                PositionSourceType.Portfolio else ReportType.Asset_Thematic_Analytics
+
         super().__init__(report_id, name, position_source_id, position_source_type,
                          report_type, parameters, earliest_start_date, latest_end_date,
                          latest_execution_time, status, percentage_complete)

@@ -19,18 +19,17 @@ import datetime as dt
 import json
 import logging
 import math
-import msgpack
-from socket import gaierror
-import time
-from typing import Iterable, Optional, Union
-import sys
 import os
+import sys
+import time
+from socket import gaierror
+from typing import Iterable, Optional, Union
 
-from opentracing import Format
+import msgpack
+from opentracing import Span
 
 from gs_quant.api.risk import RiskApi
 from gs_quant.risk import RiskRequest
-from gs_quant.session import GsSession
 from gs_quant.target.risk import OptimizationRequest
 from gs_quant.tracing import Tracer
 
@@ -63,8 +62,7 @@ class GsRiskApi(RiskApi):
     def _exec(cls, request: Union[RiskRequest, Iterable[RiskRequest]]) -> Union[Iterable, dict]:
         use_msgpack = cls.USE_MSGPACK and not isinstance(request, RiskRequest)
         headers = {'Content-Type': 'application/x-msgpack'} if use_msgpack else {}
-        Tracer.inject(Format.HTTP_HEADERS, headers)
-        result, request_id = GsSession.current._post(cls.__url(request),
+        result, request_id = cls.get_session()._post(cls.__url(request),
                                                      request,
                                                      request_headers=headers,
                                                      timeout=181,
@@ -82,20 +80,24 @@ class GsRiskApi(RiskApi):
 
     @classmethod
     async def get_results(cls, responses: asyncio.Queue, results: asyncio.Queue,
-                          timeout: Optional[int] = None) -> Optional[str]:
+                          timeout: Optional[int] = None, span: Optional[Span] = None) -> Optional[str]:
         if cls.POLL_FOR_BATCH_RESULTS:
-            return await cls.__get_results_poll(responses, results, timeout=timeout)
+            return await cls.__get_results_poll(responses, results, timeout=timeout, span=span)
         else:
             try:
-                return await cls.__get_results_ws(responses, results, timeout=timeout)
+                return await cls.__get_results_ws(responses, results, timeout=timeout, span=span)
             except WebsocketUnavailable:
-                return await cls.__get_results_poll(responses, results, timeout=timeout)
+                return await cls.__get_results_poll(responses, results, timeout=timeout, span=span)
 
     @classmethod
-    async def __get_results_poll(cls, responses: asyncio.Queue, results: asyncio.Queue, timeout: Optional[int] = None):
+    async def __get_results_poll(cls, responses: asyncio.Queue, results: asyncio.Queue, timeout: Optional[int] = None,
+                                 span: Optional[Span] = None):
         run = True
         pending_requests = {}
         end_time = dt.datetime.now() + dt.timedelta(seconds=timeout) if timeout else None
+
+        if span:
+            Tracer.get_instance().scope_manager.activate(span, finish_on_close=False)
 
         while pending_requests or run:
             # Check for timeout
@@ -119,7 +121,7 @@ class GsRiskApi(RiskApi):
             # ... poll for completed requests ...
 
             try:
-                calc_results = GsSession.current._post('/risk/calculate/results/bulk', list(pending_requests.keys()))
+                calc_results = cls.get_session()._post('/risk/calculate/results/bulk', list(pending_requests.keys()))
 
                 # ... enqueue the request and result for the listener to handle ...
                 for result in calc_results:
@@ -134,7 +136,8 @@ class GsRiskApi(RiskApi):
                 return error_str
 
     @classmethod
-    async def __get_results_ws(cls, responses: asyncio.Queue, results: asyncio.Queue, timeout: Optional[int] = None):
+    async def __get_results_ws(cls, responses: asyncio.Queue, results: asyncio.Queue, timeout: Optional[int] = None,
+                               span: Optional[Span] = None):
         async def handle_websocket():
             ret = ''
 
@@ -150,7 +153,7 @@ class GsRiskApi(RiskApi):
 
                 while pending_requests or not all_requests_dispatched:
                     # Continue while we have pending or un-dispatched requests
-
+                    _logger.debug(f'waiting for {", ".join(pending_requests.keys())}')
                     request_listener = asyncio.ensure_future(cls.drain_queue_async(responses)) \
                         if not all_requests_dispatched else None
                     result_listener = asyncio.ensure_future(ws.recv())
@@ -160,9 +163,9 @@ class GsRiskApi(RiskApi):
                     complete, pending = await asyncio.wait(listeners, return_when=asyncio.FIRST_COMPLETED)
 
                     # Check results before sending more requests. Results can be lost otherwise
-
                     if result_listener in complete:
                         # New results have been received
+                        request_id = None
                         try:
                             request_id, status_result_str = result_listener.result().split(';', 1)
                             status, result_str = status_result_str[0], status_result_str[1:]
@@ -175,15 +178,23 @@ class GsRiskApi(RiskApi):
                             result = RuntimeError(result_str)
                         else:
                             # Unpack the result
-
                             try:
                                 result = msgpack.unpackb(base64.b64decode(result_str), raw=False) \
                                     if cls.USE_MSGPACK else json.loads(result_str)
                             except Exception as ee:
                                 result = ee
-
-                        # Enqueue the request and result for the listener to handle
-                        results.put_nowait((pending_requests.pop(request_id), result))
+                        if request_id is None:
+                            # Certain fatal websocket errors (e.g. ConnectionClosed) that are caught above will mean
+                            # we have no request_id - In this case we abort and set the error on all results
+                            result_listener.cancel()
+                            for req in pending_requests.values():
+                                results.put_nowait((req, result))
+                            # Give up
+                            pending_requests.clear()
+                            all_requests_dispatched = True
+                        else:
+                            # Enqueue the request and result for the listener to handle
+                            results.put_nowait((pending_requests.pop(request_id), result))
                     else:
                         result_listener.cancel()
 
@@ -193,8 +204,9 @@ class GsRiskApi(RiskApi):
 
                             all_requests_dispatched, items = request_listener.result()
                             if items:
-                                if not isinstance(items[0][1], dict):
-                                    raise RuntimeError(items[0][1][0][0][0]['errorString'])
+                                if not all([isinstance(i[1], dict) for i in items]):
+                                    error_item = next(i[1] for i in items if not isinstance(i[1], dict))
+                                    raise RuntimeError(error_item[0][0][0]['errorString'])
 
                                 # ... extract the request IDs ...
                                 request_ids = [i[1]['reportId'] for i in items]
@@ -230,8 +242,15 @@ class GsRiskApi(RiskApi):
                 _logger.error(f'{error} error, retrying (attempt {attempts + 1} of {max_attempts})')
 
             try:
-                async with GsSession.current._connect_websocket('/risk/calculate/results/subscribe') as ws:
-                    error = await handle_websocket()
+                ws_url = '/risk/calculate/results/subscribe'
+                async with cls.get_session()._connect_websocket(ws_url) as ws:
+                    if span:
+                        Tracer.get_instance().scope_manager.activate(span, finish_on_close=False)
+                        with Tracer(f'wss:/{ws_url}') as scope:
+                            scope.span.set_tag('wss.host', ws.request_headers.get('host'))
+                            error = await handle_websocket()
+                    else:
+                        error = await handle_websocket()
 
                 attempts = max_attempts
             except ConnectionClosedError as cce:
@@ -254,7 +273,7 @@ class GsRiskApi(RiskApi):
     @classmethod
     def create_pretrade_execution_optimization(cls, request: OptimizationRequest) -> str:
         try:
-            response = GsSession.current._post(r'/risk/execution/pretrade', request)
+            response = cls.get_session()._post(r'/risk/execution/pretrade', request)
             _logger.info('New optimization is created with id: {}'.format(response.get("optimizationId")))
             return response
         except Exception as e:
@@ -274,7 +293,7 @@ class GsRiskApi(RiskApi):
                 time.sleep(math.pow(2, attempts))
                 _logger.error('Retrying (attempt {} of {})'.format(attempts, max_attempts))
             try:
-                results = GsSession.current._get(url)
+                results = cls.get_session()._get(url)
                 if results.get('status') == 'Running':
                     attempts += 1
                 else:

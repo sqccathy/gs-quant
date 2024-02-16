@@ -213,13 +213,15 @@ class Basket(Asset, PositionedEntity):
 
         """
         edit_inputs, rebal_inputs = self.__get_updates()
-        entitlements = self.__entitlements.to_target()
         response = None
-        if not entitlements == self.__initial_entitlements:
-            response = GsAssetApi.update_asset_entitlements(self.id, entitlements)
+
+        init_entitlements = BasketEntitlements.from_target(self.__initial_entitlements)
+        if not init_entitlements == self.__entitlements:
+            response = GsAssetApi.update_asset_entitlements(self.id,
+                                                            self.__entitlements.to_target(include_all_tokens=True))
         if edit_inputs is None and rebal_inputs is None:
             if response:
-                return response.as_dict()
+                return response
             raise MqValueError('Update failed: Nothing on the basket was changed')
         elif edit_inputs is not None and rebal_inputs is None:
             response = GsIndexApi.edit(self.id, edit_inputs)
@@ -266,7 +268,7 @@ class Basket(Asset, PositionedEntity):
             raise MqValueError('Unable to upload position history: option must be set during basket creation')
         historical_position_sets = []
         for position_set in position_sets:
-            position_set.resolve()
+            self.__validate_position_set(position_set)
             positions = [IndicesPositionInput(p.asset_id, p.weight) for p in position_set.positions]
             historical_position_sets.append(IndicesPositionSet(tuple(positions), position_set.date))
         response = GsIndexApi.backcast(self.id, CustomBasketsBackcastInputs(tuple(historical_position_sets)))
@@ -402,7 +404,7 @@ class Basket(Asset, PositionedEntity):
 
         :func:`get_rebalance_approval_status` :func:`update`
         """
-        return GsIndexApi.cancel_rebalance(self.id)
+        return GsIndexApi.cancel_rebalance(self.id, CustomBasketsRebalanceAction.default_instance())
 
     @_validate(ErrorMessage.UNINITIALIZED)
     def get_corporate_actions(self,
@@ -666,7 +668,6 @@ class Basket(Asset, PositionedEntity):
         self.__entitlements = value
 
     @property
-    @_validate(ErrorMessage.NON_INTERNAL)
     def flagship(self) -> Optional[bool]:
         """ If the basket is flagship (internal only) """
         return self.__flagship
@@ -737,7 +738,7 @@ class Basket(Asset, PositionedEntity):
     @position_set.setter
     @_validate(ErrorMessage.NON_ADMIN)
     def position_set(self, value: PositionSet):
-        value.resolve()
+        self.__validate_position_set(value)
         self.__position_set = value
 
     @property
@@ -833,7 +834,7 @@ class Basket(Asset, PositionedEntity):
         self.__latest_create_report = GsReportApi.get_report(response.report_id)
         report_status = self.poll_report(report_id, timeout=600, step=15)
         if report_status != ReportStatus.done:
-            raise MqError(f'The basket edit report\'s status is {status}. The current rebalance request will \
+            raise MqError(f'The basket edit report\'s status is {report_status}. The current rebalance request will \
                             not be submitted in the meantime.')
         _logger.info('Your basket edits have completed successfuly. Submitting rebalance request now...')
         response = GsIndexApi.rebalance(self.id, rebal_inputs)
@@ -975,6 +976,17 @@ class Basket(Asset, PositionedEntity):
             if not any(t in user_tokens for t in tokens):
                 errors.append(ErrorMessage.NON_ADMIN)
         self.__error_messages = set(errors)
+
+    @staticmethod
+    def __validate_position_set(position_set: PositionSet):
+        position_set.resolve()
+        neg_pos = [p.identifier for p in position_set.positions if (p.weight or 1) < 0 or (p.quantity or 1) < 0]
+        if len(neg_pos):
+            raise MqValueError(f'Position weights/quantities must be positive. Found negative values for date \
+            {position_set.date}: {neg_pos}')
+        if position_set.unresolved_positions is not None and len(position_set.unresolved_positions):
+            raise MqValueError(f'Error in resolving the following identifiers for date {position_set.date}: \
+            {[p.identifier for p in position_set.unresolved_positions]}')
 
     def __validate_ticker(self, ticker: str):
         """ Blocks ticker setter if entry is invalid """

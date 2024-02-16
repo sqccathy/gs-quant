@@ -29,11 +29,11 @@ class MockData(MockRequest):
     def __init__(self, mocker, save_files=False, paths=None, application='gs-quant'):
         super().__init__(mocker, save_files, paths, application)
         self.paths = paths if paths else \
-            Path(next(filter(lambda x: x.code_context and 'MockData' in x.code_context[0],
+            Path(next(filter(lambda x: x.code_context and self.__class__.__name__ in x.code_context[0],
                              inspect.stack())).filename).parents[1]
 
     def mock_calc_create_files(self, *args, **kwargs):
-        from orjson import orjson
+        import orjson
 
         def get_json(*i_args, **i_kwargs):
             this_json = self.api_method(*i_args, **i_kwargs)
@@ -48,6 +48,22 @@ class MockData(MockRequest):
         return result
 
     def get_request_id(self, args, kwargs):
-        query = args[0]
-        identifier = args[1] + '_' + query.where['bbid'] + '_' + str(query.start_date)
+        query = args[0].as_dict()
+        parts = []
+        relevant_data_query_params = [k for k in
+                                      ["start_date", "start_time", "end_date", "end_time", "as_of_time", "since",
+                                       "dates", "where"] if k in query.keys()]
+
+        def stringify_values(v):
+            return ','.join(v) if isinstance(v, list) else str(v)
+
+        for k in sorted(relevant_data_query_params):
+            v = query[k]
+            if k != 'where':
+                v_str = stringify_values(v)
+            else:
+                v_str = '_'.join([f'{where_k}:{stringify_values(where_v)}' for where_k, where_v in v.items()])
+            parts.append(f'{k}:{v_str}')
+        query_str = '_'.join(parts)
+        identifier = f'{args[1]}_{query_str}'
         return hashlib.md5(identifier.encode('utf-8')).hexdigest()

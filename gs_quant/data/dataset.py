@@ -17,7 +17,7 @@ import datetime as dt
 import re
 import webbrowser
 from enum import Enum
-from typing import Iterable, Optional, Union, List, Dict
+from typing import Iterable, Optional, Union, List, Dict, Callable
 from urllib.parse import quote
 
 import inflection
@@ -28,6 +28,8 @@ from gs_quant.api.data import DataApi
 from gs_quant.data.fields import Fields
 from gs_quant.errors import MqValueError
 from gs_quant.session import GsSession
+from functools import partial
+from gs_quant.data.utilities import Utilities
 
 
 class Dataset:
@@ -58,6 +60,8 @@ class Dataset:
         RETAIL_FLOW_DAILY_V2_PREMIUM = 'RETAIL_FLOW_DAILY_V2_PREMIUM'
         FX_EVENTS_JUMPS = 'FX_EVENTS_JUMPS'
         FXSPOT_INTRADAY2 = 'FXSPOT_INTRADAY2'
+        FXFORWARDPOINTS_PREMIUM = 'FXFORWARDPOINTS_PREMIUM'
+        FXFORWARDPOINTS_INTRADAY = 'FXFORWARDPOINTS_INTRADAY'
         # Test Datasets
         WEATHER = 'WEATHER'
 
@@ -111,6 +115,8 @@ class Dataset:
             since: Optional[dt.datetime] = None,
             fields: Optional[Iterable[Union[str, Fields]]] = None,
             asset_id_type: Optional[str] = None,
+            empty_intervals: Optional[bool] = None,
+            standard_fields: Optional[bool] = False,
             **kwargs
     ) -> pd.DataFrame:
         """
@@ -121,6 +127,8 @@ class Dataset:
         :param as_of: Request data as_of
         :param since: Request data since
         :param fields: DataSet fields to include
+        :param empty_intervals: whether to request empty intervals
+        :param standard_fields: If set, will use fields api instead of catalog api to get fieldTypes
         :param kwargs: Extra query arguments, e.g. ticker='EDZ19'
         :return: A Dataframe of the requested data
 
@@ -134,18 +142,34 @@ class Dataset:
         """
 
         field_names = None if fields is None else list(map(lambda f: f if isinstance(f, str) else f.value, fields))
-
+        # check whether a function is called e.g. difference(tradePrice)
+        schema_varies = field_names is not None and any(map(lambda s: re.match("\\w+\\(", s), field_names))
+        if kwargs and "date" in kwargs:
+            d = kwargs["date"]
+            if type(d) is str:
+                try:
+                    kwargs["date"] = dt.datetime.strptime(d, "%Y-%m-%d").date()
+                except ValueError:
+                    pass  # Ignore error if date parameter is in some other format
+            if "dates" not in kwargs and start is None and end is None:
+                kwargs["dates"] = (kwargs["date"],)
         query = self.provider.build_query(
             start=start,
             end=end,
             as_of=as_of,
             since=since,
             fields=field_names,
+            empty_intervals=empty_intervals,
             **kwargs
         )
         data = self.provider.query_data(query, self.id, asset_id_type=asset_id_type)
-
-        return self.provider.construct_dataframe_with_types(self.id, data)
+        if type(data) is tuple:
+            df = self.provider.construct_dataframe_with_types(self.id, data[0], schema_varies,
+                                                              standard_fields=standard_fields)
+            return df.groupby(data[1], group_keys=True).apply(lambda x: x)
+        else:
+            return self.provider.construct_dataframe_with_types(self.id, data, schema_varies,
+                                                                standard_fields=standard_fields)
 
     def get_data_series(
             self,
@@ -155,6 +179,7 @@ class Dataset:
             as_of: Optional[dt.datetime] = None,
             since: Optional[dt.datetime] = None,
             dates: Optional[List[dt.date]] = None,
+            standard_fields: Optional[bool] = False,
             **kwargs
     ) -> pd.Series:
         """
@@ -165,6 +190,7 @@ class Dataset:
         :param end: Requested end date/datetime for data
         :param as_of: Request data as_of
         :param since: Request data since
+        :param standard_fields: If set, will use fields api instead of catalog api to get fieldTypes
         :param kwargs: Extra query arguments, e.g. ticker='EDZ19'
         :return: A Series of the requested data, indexed by date or time, depending on the DataSet
 
@@ -196,7 +222,7 @@ class Dataset:
 
         symbol_dimension = symbol_dimensions[0]
         data = self.provider.query_data(query, self.id)
-        df = self.provider.construct_dataframe_with_types(self.id, data)
+        df = self.provider.construct_dataframe_with_types(self.id, data, standard_fields=standard_fields)
 
         from gs_quant.api.gs.data import GsDataApi
 
@@ -217,6 +243,7 @@ class Dataset:
             as_of: Optional[Union[dt.date, dt.datetime]],
             start: Optional[Union[dt.date, dt.datetime]] = None,
             fields: Optional[Iterable[str]] = None,
+            standard_fields: Optional[bool] = False,
             **kwargs
     ) -> pd.DataFrame:
         """
@@ -225,6 +252,7 @@ class Dataset:
         :param as_of: The date or time as of which to query
         :param start: The start of the range to query
         :param fields: The fields for which to query
+        :param standard_fields: If set, will use fields api instead of catalog api to get fieldTypes
         :param kwargs: Additional query parameters, e.g., city='Boston'
         :return: A Dataframe of values
 
@@ -246,7 +274,7 @@ class Dataset:
         query.format = None  # "last" endpoint does not support MessagePack
 
         data = self.provider.last_data(query, self.id)
-        return self.provider.construct_dataframe_with_types(self.id, data)
+        return self.provider.construct_dataframe_with_types(self.id, data, standard_fields=standard_fields)
 
     def get_coverage(
             self,
@@ -273,6 +301,41 @@ class Dataset:
         >>> cities = weather.get_coverage()
         """
         coverage = self.provider.get_coverage(
+            self.id,
+            limit=limit,
+            offset=offset,
+            fields=fields,
+            include_history=include_history,
+            **kwargs
+        )
+
+        return pd.DataFrame(coverage)
+
+    async def get_coverage_async(
+            self,
+            limit: Optional[int] = None,
+            offset: Optional[int] = None,
+            fields: Optional[List[str]] = None,
+            include_history: bool = False,
+            **kwargs
+    ) -> pd.DataFrame:
+        """
+        Get the assets covered by this DataSet
+
+        :param limit: The maximum number of assets to return
+        :param offset: The offset
+        :param fields: The fields to return, e.g. assetId
+        :param include_history: Return column for historyStartDate
+        :return: A Dataframe of the assets covered
+
+        **Examples**
+
+        >>> from gs_quant.data import Dataset
+        >>>
+        >>> weather = Dataset('WEATHER')
+        >>> cities = await weather.get_coverage_async()
+        """
+        coverage = await self.provider.get_coverage_async(
             self.id,
             limit=limit,
             offset=offset,
@@ -350,6 +413,97 @@ class Dataset:
         >>> upload_response = weather.upload_data(data)
         """
         return self.provider.upload_data(self.id, data)
+
+    def get_data_bulk(self,
+                      request_batch_size,
+                      original_start: dt.datetime,
+                      final_end: Optional[dt.datetime] = None,
+                      identifier="bbid",
+                      symbols_per_csv: int = 1000,
+                      datetime_delta_override: Optional[int] = None,
+                      handler: Optional[Callable[[pd.DataFrame], None]] = None
+                      ):
+        """
+        Extracts data from dataset by running parallel queries in the background
+
+        :param request_batch_size: Used to group number of symbols per batch run (> 0 and <5)
+        :param original_start: Start date to fetch the data (mandatory)
+        :param final_end: End date to fetch the data. If not entered defaults to current datetime
+        :param identifier: Use specific identifier as per dataset configuration. ex. cusip, bbid, clusterRegion
+        :param symbols_per_csv: Number of symbols per CSV (recommended value = 1000)
+        :param datetime_delta_override: A numeric parameter to increment start date and fetch data in batches
+            units are days for daily datasets and hours for intraday
+        :param handler: A callable function, if provided, to handle dataframe instead of writing to CSV
+
+
+        **Examples**
+
+        >>> import datetime as dt
+        >>> from gs_quant.data import Dataset
+        >>> dataset_id = "EQTRADECLUSTERS"
+        >>> original_start = dt.datetime(2023, 3, 1,0,0,0)
+        >>> final_end = dt.datetime(2023, 3, 1,0,0,0)
+        >>> c = Dataset(dataset_id)
+        >>> c.get_data_bulk(original_start=original_start,
+        >>>                 final_end=final_end,
+        >>>                 datetime_delta_override=1,
+        >>>                 request_batch_size=4,
+        >>>                 identifier="clusterRegion")
+        """
+
+        try:
+            authenticate = partial(GsSession.use,
+                                   client_id=GsSession.current.client_id,
+                                   client_secret=GsSession.current.client_secret
+                                   )
+        except AttributeError:
+            authenticate = partial(GsSession.use)
+
+        time_field, history_time, symbol_dimension, timedelta = Utilities.get_dataset_parameter(self)
+        final_end = final_end or dt.datetime.now()
+        write_to_csv = handler is None
+        final_end, target_dir_result = Utilities.pre_checks(final_end, original_start, time_field,
+                                                            datetime_delta_override, request_batch_size, write_to_csv)
+        if write_to_csv:
+            print("Target Destination Folder: ", target_dir_result)
+
+        if time_field == 'date':
+            original_start = max(original_start.date(), history_time.date())
+            final_end = max(final_end.date(), history_time.date())
+            datetime_delta_override = timedelta if datetime_delta_override is None else dt.timedelta(
+                days=datetime_delta_override)
+        elif time_field == 'time':
+            original_start = max(original_start.astimezone(dt.timezone.utc), history_time.astimezone(dt.timezone.utc))
+            final_end = max(final_end.astimezone(dt.timezone.utc), history_time.astimezone(dt.timezone.utc))
+            datetime_delta_override = timedelta if datetime_delta_override is None else dt.timedelta(
+                hours=datetime_delta_override)
+
+        original_end = min(original_start + datetime_delta_override, final_end)
+        coverage = Utilities.get_dataset_coverage(identifier, symbol_dimension, self)
+        coverage_batches = Utilities.batch(coverage, n=symbols_per_csv)
+        batch_number = 1
+        coverage_length = len(coverage)
+
+        for coverage_batch in coverage_batches:
+            Utilities.iterate_over_series(
+                self,
+                coverage_batch,
+                original_start,
+                original_end,
+                datetime_delta_override,
+                identifier,
+                request_batch_size,
+                authenticate,
+                final_end,
+                write_to_csv,
+                target_dir_result,
+                batch_number,
+                coverage_length,
+                symbols_per_csv,
+                handler
+            )
+
+            batch_number += 1
 
 
 class PTPDataset(Dataset):

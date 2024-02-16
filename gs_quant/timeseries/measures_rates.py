@@ -22,6 +22,8 @@ from enum import Enum
 from typing import Optional, Union, Dict, List
 
 import pandas as pd
+from gs_quant.instrument import IRSwap
+
 from pandas import Series
 
 from gs_quant.api.gs.assets import GsAssetApi
@@ -30,7 +32,7 @@ from gs_quant.data import DataContext, Dataset
 from gs_quant.datetime.gscalendar import GsCalendar
 from gs_quant.errors import MqValueError
 from gs_quant.markets.securities import AssetIdentifier, Asset
-from gs_quant.target.common import Currency as CurrencyEnum, AssetClass, AssetType, PricingLocation
+from gs_quant.target.common import Currency as CurrencyEnum, AssetClass, AssetType, PricingLocation, SwapClearingHouse
 from gs_quant.timeseries import currency_to_default_ois_asset, convert_asset_for_rates_data_set, RatesConversionType
 from gs_quant.timeseries.helper import _to_offset, check_forward_looking, plot_measure
 from gs_quant.timeseries.measures import _market_data_timed, _range_from_pricing_date, \
@@ -106,10 +108,35 @@ class TdapiRatesDefaultsProvider:
 
 SWAPTION_DEFAULTS = {
     "CURRENCIES": {
+        "AUD": [{"benchmarkType": "BBR", "floatingRateOption": "AUD-BBR-BBSW", "floatingRateTenor": ["6m", "3m"],
+                 "assetIdForAvailabilityCheck": "MAQHSC1PAF4X5H4B",
+                 "pricingLocation": ["TKO"]}],
         "EUR": [
             {"benchmarkType": "LIBOR", "floatingRateOption": "EUR-EURIBOR-TELERATE", "floatingRateTenor": ["6m", "3m"],
              "assetIdForAvailabilityCheck": "MAZB3PAH8JFVVT80",
-             "pricingLocation": ["LDN"]}],
+             "pricingLocation": ["LDN"]},
+            {"benchmarkType": "EURIBOR", "floatingRateOption": "EUR-EURIBOR-TELERATE",
+             "floatingRateTenor": ["6m", "3m"],
+             "assetIdForAvailabilityCheck": "MAZB3PAH8JFVVT80",
+             "pricingLocation": ["LDN"]}
+        ],
+        "GBP": [{"benchmarkType": "LIBOR", "floatingRateOption": "GBP-LIBOR-BBA", "floatingRateTenor": ["6m", "3m"],
+                 "assetIdForAvailabilityCheck": "MAX2SBXZRPYR3NTY",
+                 "pricingLocation": ["LDN"]},
+                {"benchmarkType": "SONIA", "floatingRateOption": "GBP-SONIA-COMPOUND",
+                 "floatingRateTenor": ["1y", "6m", "3m"],
+                 "assetIdForAvailabilityCheck": "MAQC2E5J9X6WGGCJ",
+                 "pricingLocation": ["LDN"]}
+                ],
+        "JPY": [{"benchmarkType": "LIBOR", "floatingRateOption": "JPY-LIBOR-BBA", "floatingRateTenor": ["6m"],
+                 "assetIdForAvailabilityCheck": "MATT7CA7PRA4B8YB",
+                 "pricingLocation": ["TKO"], }],
+        "KRW": [{"benchmarkType": "KSDA", "floatingRateOption": "KRW-CD-KSDA-BLOOMBERG", "floatingRateTenor": ["3m"],
+                 "assetIdForAvailabilityCheck": "MAMNSGB00G4ZCWMP",
+                 "pricingLocation": ["TKO"]}],
+        "NZD": [{"benchmarkType": "BBR", "floatingRateOption": "NZD-BBR-FRA", "floatingRateTenor": ["3m"],
+                 "assetIdForAvailabilityCheck": "MAHGK129ZCWCEG33",
+                 "pricingLocation": ["TKO"], }],
         "USD": [{"benchmarkType": "LIBOR", "floatingRateOption": "USD-LIBOR-BBA", "floatingRateTenor": ["3m", "6m"],
                  "assetIdForAvailabilityCheck": "MAY0X3KRD4AN77E2",
                  "strikeReference": ["ATM"],
@@ -120,20 +147,6 @@ SWAPTION_DEFAULTS = {
                  "strikeReference": ["ATM"],
                  "pricingLocation": ["NYC"]}
                 ],
-        "GBP": [{"benchmarkType": "LIBOR", "floatingRateOption": "GBP-LIBOR-BBA", "floatingRateTenor": ["6m", "3m"],
-                 "assetIdForAvailabilityCheck": "MAX2SBXZRPYR3NTY",
-                 "pricingLocation": ["LDN"]},
-                {"benchmarkType": "SONIA", "floatingRateOption": "GBP-SONIA-COMPOUND",
-                 "floatingRateTenor": ["1y", "6m", "3m"],
-                 "assetIdForAvailabilityCheck": "MAQC2E5J9X6WGGCJ",
-                 "pricingLocation": ["LDN"]}
-                ],
-        "AUD": [{"benchmarkType": "BBR", "floatingRateOption": "AUD-BBR-BBSW", "floatingRateTenor": ["6m", "3m"],
-                 "assetIdForAvailabilityCheck": "MAQHSC1PAF4X5H4B",
-                 "pricingLocation": ["TKO"]}],
-        "JPY": [{"benchmarkType": "LIBOR", "floatingRateOption": "JPY-LIBOR-BBA", "floatingRateTenor": ["6m"],
-                 "assetIdForAvailabilityCheck": "MATT7CA7PRA4B8YB",
-                 "pricingLocation": ["TKO"], }]
     },
     "COMMON": {
         "strikeReference": "ATM",
@@ -146,65 +159,79 @@ SWAPTION_DEFAULTS = {
 swaptions_defaults_provider = TdapiRatesDefaultsProvider(SWAPTION_DEFAULTS)
 
 CURRENCY_TO_SWAP_RATE_BENCHMARK = {
+    'AUD': OrderedDict([('BBR', 'AUD-BBR-BBSW'), ('AONIA', 'AUD-AONIA-OIS-COMPOUND')]),
+    'BRL': {'CDI': 'BRR-CDI-COMPOUNDED'},
+    'CAD': OrderedDict([('CDOR', 'CAD-BA-CDOR'), ('CORRA', 'CAD-CORRA-OIS-COMP')]),
     'CHF': OrderedDict([('LIBOR', 'CHF-LIBOR-BBA'), ('SARON', 'CHF-SARON-OIS-COMPOUND')]),
+    'CLP': {'TNA': 'CLP-ICP-CAMARA'},
+    'CNY': {'REPO': 'CNY-REPO RATE'},
+    'COP': {'IBR': 'COP-IBR-ON'},
+    'CZK': {'PRIBOR': 'CZK-PRIBOR-PRBO'},
+    'DKK': OrderedDict([('CIBOR', 'DKK-CIBOR2-DKNA13'), ('OIS', 'DKK-DKKOIS-OIS-COMPOUND')]),
     'EUR': OrderedDict([('EURIBOR', 'EUR-EURIBOR-TELERATE'), ('EONIA', 'EUR-EONIA-OIS-COMPOUND'),
                         ('EUROSTR', 'EUR-EUROSTR-COMPOUND')]),
     'GBP': OrderedDict([('LIBOR', 'GBP-LIBOR-BBA'), ('SONIA', 'GBP-SONIA-COMPOUND')]),
+    'HKD': {'HIBOR': 'HKD-HIBOR-HKAB'},
+    'HUF': {'BIBOR': 'HUF-BIBOR-BUB'},
+    'ILS': {'TELBOR': 'ILS-TELBOR-FCI'},
+    'INR': {'MIBOR': 'INR-MIBOR-OIS-COMPOUND'},
     'JPY': OrderedDict([('LIBOR', 'JPY-LIBOR-BBA'), ('TONA', 'JPY-TONA-OIS-COMPOUND')]),
+    'KRW': {'KSDA': 'KRW-CD-KSDA-BLOOMBERG'},
+    'MXN': {'TIIE': 'MXN-TIIE-FX'},
+    'NOK': OrderedDict([('NIBOR', 'NOK-NIBOR-BBA'), ('NOWA', 'NOK-NOWA-OIS-COMPOUND')]),
+    'NZD': OrderedDict([('BBR', 'NZD-BBR-FRA'), ('NZIONA', 'NZD-NZIONA-OIS-COMPOUND')]),
+    'PLN': {'WIBOR': 'PLZ-WIBOR-WIBO'},
+    'RUB': {'MOSPRIME': 'RUB-MOSPRIME-NFEA'},
+    'SEK': OrderedDict([('STIBOR', 'SEK-STIBOR-SIDE'), ('SIOR', 'SEK-SIOR-OIS-COMPOUND')]),
+    'SGD': OrderedDict([('SOR', 'SGD-SOR-VWAP'), ('SORA', 'SGD-SORA-COMPOUND')]),
+    'THB': {'THOR': 'THB-THOR-COMPOUND'},
     'USD': OrderedDict(
         [('LIBOR', 'USD-LIBOR-BBA'), ('Fed_Funds', 'USD-Federal Funds-H.15-OIS-COMP'), ('SOFR', 'USD-SOFR-COMPOUND')]),
-    'SEK': OrderedDict([('STIBOR', 'SEK-STIBOR-SIDE'), ('SIOR', 'SEK-SIOR-OIS-COMPOUND')]),
-    'NOK': OrderedDict([('NIBOR', 'NOK-NIBOR-BBA'), ('NOWA', 'NOK-NOWA-OIS-COMPOUND')]),
-    'DKK': OrderedDict([('CIBOR', 'DKK-CIBOR2-DKNA13'), ('OIS', 'DKK-DKKOIS-OIS-COMPOUND')]),
-    'AUD': OrderedDict([('BBR', 'AUD-BBR-BBSW'), ('AONIA', 'AUD-AONIA-OIS-COMPOUND')]),
-    'CAD': OrderedDict([('CDOR', 'CAD-BA-CDOR'), ('CORRA', 'CAD-CORRA-OIS-COMP')]),
-    'NZD': OrderedDict([('BBR', 'NZD-BBR-FRA'), ('NZIONA', 'NZD-NZIONA-OIS-COMPOUND')]),
-    'KRW': {'KSDA': 'KRW-CD-KSDA-BLOOMBERG'},
-    'CNY': {'REPO': 'CNY-REPO RATE'},
-    'SGD': {'SOR': 'SGD-SOR-VWAP'},
-    'HKD': {'HIBOR': 'HKD-HIBOR-HKAB'},
-    'INR': {'MIBOR': 'INR-MIBOR-OIS-COMPOUND'},
-    'BRL': {'CDI': 'BRR-CDI-COMPOUNDED'},
-    'CLP': {'TNA': 'CLP-ICP-CAMARA'},
-    'COP': {'IBR': 'COP-IBR-ON'},
-    'MXN': {'TIIE': 'MXN-TIIE-FX'}
+    'ZAR': {'JIBAR': 'ZAR-JIBAR-SAFEX'},
 }
 # TODO Join into single object.
 BENCHMARK_TO_DEFAULT_FLOATING_RATE_TENORS = {
+    'BRR-CDI-COMPOUNDED': '1b',
+    'AUD-BBR-BBSW': '6m',
+    'AUD-AONIA-OIS-COMPOUND': '1y',
+    'CAD-BA-CDOR': '3m',
+    'CAD-CORRA-OIS-COMP': '3m',
     'CHF-LIBOR-BBA': '6m',
     'CHF-SARON-OIS-COMPOUND': '1y',
+    'CLP-ICP-CAMARA': '1b',
+    'CNY-REPO RATE': '1w',
+    'COP-IBR-ON': '1b',
+    'CZK-PRIBOR-PRBO': '6m',
+    'DKK-CIBOR2-DKNA13': '6m',
+    'DKK-DKKOIS-OIS-COMPOUND': '1y',
     'EUR-EURIBOR-TELERATE': '6m',
     'EUR-EUROSTR-COMPOUND': '1y',
     'EUR-EONIA-OIS-COMPOUND': '1y',
     'GBP-LIBOR-BBA': '6m',
     'GBP-SONIA-COMPOUND': '1y',
+    'HKD-HIBOR-HKAB': '3m',
+    'HUF-BIBOR-BUB': '6m',
+    'INR-MIBOR-OIS-COMPOUND': '6m',
+    'ILS-TELBOR-FCI': '3m',
     'JPY-LIBOR-BBA': '6m',
     'JPY-TONA-OIS-COMPOUND': '1y',
+    'KRW-CD-KSDA-BLOOMBERG': '3m',
+    'MXN-TIIE-FX': '28d',
+    'NOK-NIBOR-BBA': '6m',
+    'NOK-NOWA-OIS-COMPOUND': '1y',
+    'NZD-BBR-FRA': '3m',
+    'NZD-NZIONA-OIS-COMPOUND': '1y',
+    'PLZ-WIBOR-WIBO': '6m',
+    'RUB-MOSPRIME-NFEA': '3m',
     'SEK-STIBOR-SIDE': '6m',
     'SEK-SIOR-OIS-COMPOUND': '1y',
+    'SGD-SOR-VWAP': '6m',
+    'SGD-SORA-COMPOUND': '3m',
+    'THB-THOR-COMPOUND': '3m',
     'USD-LIBOR-BBA': '3m',
     'USD-Federal Funds-H.15-OIS-COMP': '1y',
     'USD-SOFR-COMPOUND': '1y',
-    'NOK-NIBOR-BBA': '6m',
-    'NOK-NOWA-OIS-COMPOUND': '1y',
-    'DKK-CIBOR2-DKNA13': '6m',
-    'DKK-DKKOIS-OIS-COMPOUND': '1y',
-    'AUD-BBR-BBSW': '6m',
-    'AUD-AONIA-OIS-COMPOUND': '1y',
-    'CAD-BA-CDOR': '3m',
-    'CAD-CORRA-OIS-COMP': '3m',
-    'NZD-BBR-FRA': '3m',
-    'NZD-NZIONA-OIS-COMPOUND': '1y',
-    'KRW-CD-KSDA-BLOOMBERG': '3m',
-    'CNY-REPO RATE': '1w',
-    'SGD-SOR-VWAP': '6m',
-    'HKD-HIBOR-HKAB': '3m',
-    'INR-MIBOR-OIS-COMPOUND': '6m',
-    'BRR-CDI-COMPOUNDED': '1b',
-    'CLP-ICP-CAMARA': '1b',
-    'COP-IBR-ON': '1b',
-    'MXN-TIIE-FX': '28d'
-
+    'ZAR-JIBAR-SAFEX': '3m',
 }
 CURRENCY_TO_PRICING_LOCATION = {
     CurrencyEnum.JPY: PricingLocation.TKO,
@@ -252,6 +279,20 @@ CURRENCY_TO_DUMMY_SWAP_BBID = {
     'MXN': 'MAAJ9RAHYBAXGYD2'
 }
 
+SUPPORTED_INTRADAY_CURRENCY_TO_DUMMY_SWAP_BBID = {
+    'CHF': 'MACF6R4J5FY4KGBZ',
+    'EUR': 'MACF6R4J5FY4KGBZ',
+    'GBP': 'MACF6R4J5FY4KGBZ',
+    'JPY': 'MACF6R4J5FY4KGBZ',
+    'SEK': 'MACF6R4J5FY4KGBZ',
+    'USD': 'MACF6R4J5FY4KGBZ',
+    'DKK': 'MACF6R4J5FY4KGBZ',
+    'NOK': 'MACF6R4J5FY4KGBZ',
+    'NZD': 'MACF6R4J5FY4KGBZ',
+    'AUD': 'MACF6R4J5FY4KGBZ',
+    'CAD': 'MACF6R4J5FY4KGBZ'
+}
+
 # FXFwd XCCYSwap rates Defaults
 CROSS_BBID_TO_DUMMY_OISXCCY_ASSET = {
     'EURUSD': 'MA1VJC1E3SZW8E4S',
@@ -264,6 +305,11 @@ CROSS_BBID_TO_DUMMY_OISXCCY_ASSET = {
     'USDCAD': 'MAT8JNEE2GN5NES6',
     'USDCHF': 'MABNGGTNB9A0TKCG',
     'USDJPY': 'MAMZ9YG8AF3HQ18C',
+}
+
+CURRENCY_TO_CSA_DEFAULT_MAP = {
+    'USD': 'USD-SOFR',
+    'EUR': 'EUR-EUROSTR'
 }
 
 
@@ -298,6 +344,14 @@ def _currency_to_tdapi_swap_rate_asset(asset_spec: ASSET_SPEC) -> str:
     bbid = asset.get_identifier(AssetIdentifier.BLOOMBERG_ID)
     # for each currency, get a dummy asset for checking availability
     result = CURRENCY_TO_DUMMY_SWAP_BBID.get(bbid, asset.get_marquee_id())
+    return result
+
+
+def _currency_to_tdapi_swap_rate_asset_for_intraday(asset_spec: ASSET_SPEC) -> str:
+    asset = _asset_from_spec(asset_spec)
+    bbid = asset.get_identifier(AssetIdentifier.BLOOMBERG_ID)
+    # for each currency, get a dummy asset for checking availability
+    result = SUPPORTED_INTRADAY_CURRENCY_TO_DUMMY_SWAP_BBID.get(bbid, asset.get_marquee_id())
     return result
 
 
@@ -510,10 +564,7 @@ def _check_term_structure_tenor(tenor_type: _SwapTenorType, tenor: str) -> Dict:
     return dict(tenor=tenor, tenor_to_plot=tenor_to_plot, tenor_dataset_field=tenor_dataset_field)
 
 
-def _get_swap_leg_defaults(currency: CurrencyEnum, benchmark_type: BenchmarkType = None,
-                           floating_rate_tenor: str = None) -> dict:
-    pricing_location = CURRENCY_TO_PRICING_LOCATION.get(currency, PricingLocation.LDN)
-    # default benchmark types
+def _get_benchmark_type(currency: CurrencyEnum, benchmark_type: BenchmarkType = None):
     if benchmark_type is None:
         if currency == CurrencyEnum.EUR:
             benchmark_type = BenchmarkType.EURIBOR
@@ -523,6 +574,14 @@ def _get_swap_leg_defaults(currency: CurrencyEnum, benchmark_type: BenchmarkType
             benchmark_type = BenchmarkType(str(list(CURRENCY_TO_SWAP_RATE_BENCHMARK[currency.value].keys())[0]))
     benchmark_type_input = CURRENCY_TO_SWAP_RATE_BENCHMARK[currency.value][benchmark_type.value]
 
+    return benchmark_type_input
+
+
+def _get_swap_leg_defaults(currency: CurrencyEnum, benchmark_type: BenchmarkType = None,
+                           floating_rate_tenor: str = None) -> dict:
+    pricing_location = CURRENCY_TO_PRICING_LOCATION.get(currency, PricingLocation.LDN)
+    # default benchmark types
+    benchmark_type_input = _get_benchmark_type(currency, benchmark_type)
     # default floating index
     if floating_rate_tenor is None:
         floating_rate_tenor = BENCHMARK_TO_DEFAULT_FLOATING_RATE_TENORS[benchmark_type_input]
@@ -607,6 +666,39 @@ def _get_swap_data(asset: Asset, swap_tenor: str, benchmark_type: str = None, fl
     _logger.debug('q %s', q)
     df = _market_data_timed(q)
     return df
+
+
+def _get_swap_data_calc(asset: Asset, swap_tenor: str, benchmark_type: str = None, floating_rate_tenor: str = None,
+                        forward_tenor: Optional[GENERIC_DATE] = None, clearing_house: _ClearingHouse = None,
+                        real_time: bool = False, location: PricingLocation = None) -> pd.DataFrame:
+    currency = CurrencyEnum(asset.get_identifier(AssetIdentifier.BLOOMBERG_ID))
+
+    if currency.value not in SUPPORTED_INTRADAY_CURRENCY_TO_DUMMY_SWAP_BBID.keys():
+        raise NotImplementedError(f'Data not available for {currency.value} calculated swap rates')
+    benchmark_type = _check_benchmark_type(currency, benchmark_type)
+
+    clearing_house = _check_clearing_house(clearing_house)
+
+    defaults = _get_swap_leg_defaults(currency, benchmark_type, floating_rate_tenor)
+
+    if not re.fullmatch('(\\d+)([bdwmy])', swap_tenor):
+        raise MqValueError('invalid swap tenor ' + swap_tenor)
+
+    forward_tenor = _check_forward_tenor(forward_tenor)
+
+    builder = IRSwap(notional_currency=currency, clearing_house=SwapClearingHouse(clearing_house.value),
+                     floating_rate_designated_maturity=defaults['floating_rate_tenor'],
+                     floating_rate_option=defaults['benchmark_type'],
+                     fixed_rate=0.0, termination_date=swap_tenor)
+
+    if forward_tenor:
+        builder.startdate = forward_tenor
+
+    _logger.debug(f'where builder={builder.as_dict()}')
+
+    location = location or PricingLocation.NYC
+    q = GsDataApi.get_mxapi_backtest_data(builder, close_location=location.value, real_time=real_time)
+    return q
 
 
 def _get_term_struct_date(tenor: Union[str, datetime.datetime], index: datetime.datetime,
@@ -1187,6 +1279,190 @@ def swap_rate(asset: Asset, swap_tenor: str, benchmark_type: str = None, floatin
 
     series = ExtendedSeries(dtype=float) if df.empty else ExtendedSeries(df['swapRate'])
     series.dataset_ids = getattr(df, 'dataset_ids', ())
+    return series
+
+
+@plot_measure((AssetClass.Cash,), (AssetType.Currency,),
+              [MeasureDependency(id_provider=_currency_to_tdapi_swap_rate_asset_for_intraday,
+                                 query_type=QueryType.SWAP_RATE)])
+def swap_rate_calc(asset: Asset, swap_tenor: str, benchmark_type: str = None, floating_rate_tenor: str = None,
+                   forward_tenor: Optional[GENERIC_DATE] = None, clearing_house: _ClearingHouse = _ClearingHouse.LCH,
+                   location: PricingLocation = None, *,
+                   source: str = None, real_time: bool = False) -> Series:
+    """
+    GS intra-day Fixed-Floating interest rate swap (IRS) curves across major currencies.
+
+    :param asset: asset object loaded from security master
+    :param swap_tenor: relative date representation of expiration date e.g. 1m
+    :param benchmark_type: benchmark type e.g. LIBOR
+    :param floating_rate_tenor: floating index rate
+    :param forward_tenor: absolute / relative date representation of forward starting point eg: '1y' or 'Spot' for
+            spot starting swaps, 'imm1' or 'frb1'
+    :param clearing_house: Example - "LCH", "CME"
+    :param location: Example - "TKO", "LDN", "NYC"
+    :param source: name of function caller
+    :param real_time: whether to retrieve intraday data instead of EOD
+    :return: swap rate curve
+    """
+    df = _get_swap_data_calc(asset=asset, swap_tenor=swap_tenor, benchmark_type=benchmark_type,
+                             floating_rate_tenor=floating_rate_tenor, forward_tenor=forward_tenor,
+                             clearing_house=clearing_house, real_time=real_time, location=location)
+
+    series = ExtendedSeries(dtype=float) if df.empty else ExtendedSeries(df['ATMRate'])
+    series.dataset_ids = ()
+    return series
+
+
+def _csa_default(csa=None, currency=None):
+    if not csa:
+        if currency.value in CURRENCY_TO_CSA_DEFAULT_MAP:
+            csa = CURRENCY_TO_CSA_DEFAULT_MAP[currency.value]
+        else:
+            csa = f'{currency.value}-1'
+    return csa
+
+
+@plot_measure((AssetClass.Cash,), (AssetType.Currency,),
+              [MeasureDependency(id_provider=_currency_to_tdapi_swap_rate_asset,
+                                 query_type=QueryType.SWAP_RATE)])
+def forward_rate(asset: Asset, forward_start_tenor: str = None, forward_term: str = None, csa: str = None,
+                 close_location: str = None, *, source: str = None, real_time: bool = False) -> Series:
+    """
+    GS Forward Rate across major currencies.
+
+
+    :param asset: asset object loaded from security master
+    :param forward_start_tenor: Relative date of start of forward e.g. 1y
+    :param forward_term:    Term of forward, e.g. 3m
+    :param csa: Collateral code of curve, e.g. GBP-1. If not specified, default CSA is chosen
+    :param close_location: For EOD data, gives location of close
+    :param source: name of function caller
+    :param real_time: whether to retrieve intra-day data instead of EOD
+    :return: annualised instantaneous forward rate
+    """
+
+    currency = CurrencyEnum(asset.get_identifier(AssetIdentifier.BLOOMBERG_ID))
+    csa = _csa_default(csa, currency)
+    close_location = close_location or 'NYC'
+    if not forward_term:
+        raise MqValueError("Forward rate term not specified")
+
+    if not forward_start_tenor:
+        forward_start_tenor = '0d'
+
+    measure = f'FR:{forward_start_tenor}:{forward_term}'
+    df = GsDataApi.get_mxapi_curve_measure('DISCOUNT CURVE', currency.value, [], [csa], measure,
+                                           close_location=close_location, real_time=real_time)
+
+    series = ExtendedSeries(dtype=float) if df.empty else ExtendedSeries(df[measure])
+    series.dataset_ids = ()
+    return series
+
+
+@plot_measure((AssetClass.Cash,), (AssetType.Currency,),
+              [MeasureDependency(id_provider=_currency_to_tdapi_swap_rate_asset,
+                                 query_type=QueryType.SWAP_RATE)])
+def discount_factor(asset: Asset, tenor: str = None, csa: str = None, close_location: str = None,
+                    *, source: str = None, real_time: bool = False) -> Series:
+    """
+    GS Discount Factor across major currencies.
+
+
+    :param asset: asset object loaded from security master
+    :param tenor: tenor of IFR e.g. 1m
+    :param csa: Collateral code of curve to fetch IFR, e.g. GBP-1. If not specified, default CSA is chosen
+    :param close_location: For EOD data, gives location of close
+    :param source: name of function caller
+    :param real_time: whether to retrieve intra-day data instead of EOD
+    :return: annualised instantaneous forward rate
+    """
+
+    currency = CurrencyEnum(asset.get_identifier(AssetIdentifier.BLOOMBERG_ID))
+    close_location = close_location or 'NYC'
+    if not tenor:
+        raise MqValueError("Discount Curve start and end date not specified")
+
+    csa = _csa_default(csa, currency)
+
+    measure = f'DF:{tenor}'
+    df = GsDataApi.get_mxapi_curve_measure('DISCOUNT CURVE', currency.value, [], [csa], measure,
+                                           close_location=close_location, real_time=real_time)
+
+    series = ExtendedSeries(dtype=float) if df.empty else ExtendedSeries(df[measure])
+    series.dataset_ids = ()
+    return series
+
+
+@plot_measure((AssetClass.Cash,), (AssetType.Currency,),
+              [MeasureDependency(id_provider=_currency_to_tdapi_swap_rate_asset,
+                                 query_type=QueryType.SWAP_RATE)])
+def instantaneous_forward_rate(asset: Asset, tenor: str = None, csa: str = None, close_location: str = None,
+                               *, source: str = None, real_time: bool = False) -> Series:
+    """
+    GS Floating Rate Benchmark annualised instantaneous forward rates across major currencies.
+
+
+    :param asset: asset object loaded from security master
+    :param tenor: tenor of IFR e.g. 1m
+    :param csa: Collateral code of curve to fetch IFR
+    :param close_location: For EOD data, gives location of close
+    :param source: name of function caller
+    :param real_time: whether to retrieve intraday data instead of EOD
+    :return: annualised instantaneous forward rate
+    """
+
+    currency = CurrencyEnum(asset.get_identifier(AssetIdentifier.BLOOMBERG_ID))
+    close_location = close_location or 'NYC'
+    if not tenor:
+        raise MqValueError("Forward rate tenor not specified")
+
+    csa = _csa_default(csa, currency)
+
+    measure = f'IFR:{tenor}'
+    df = GsDataApi.get_mxapi_curve_measure('DISCOUNT CURVE', currency.value, [], [csa], measure,
+                                           close_location=close_location, real_time=real_time)
+
+    series = ExtendedSeries(dtype=float) if df.empty else ExtendedSeries(df[measure])
+    series.dataset_ids = ()
+    return series
+
+
+@plot_measure((AssetClass.Cash,), (AssetType.Currency,),
+              [MeasureDependency(id_provider=_currency_to_tdapi_swap_rate_asset,
+                                 query_type=QueryType.SWAP_RATE)])
+def index_forward_rate(asset: Asset, forward_start_tenor: str = None, benchmark_type: str = None,
+                       fixing_tenor: str = None, close_location: str = None, *,
+                       source: str = None, real_time: bool = False) -> Series:
+    """
+    GS annualised forward rates across floating rate benchmark
+
+
+    :param asset: asset object loaded from security master
+    :param forward_start_tenor: relative start rate of forward e.g. 1m
+    :param benchmark_type: benchmark type of floating rate option e.g. LIBOR
+    :param fixing_tenor: Fixing tenor of the given benchmark type. Leave empty to use default e.g. 3m
+    :param close_location: For EOD data, gives location of close
+    :param source: name of function caller
+    :param real_time: whether to retrieve intraday data instead of EOD
+    :return: annualised forward rate
+    """
+    currency = CurrencyEnum(asset.get_identifier(AssetIdentifier.BLOOMBERG_ID))
+    close_location = close_location or 'NYC'
+    if not forward_start_tenor:
+        raise MqValueError("Forward rate start date not specified")
+
+    benchmark_type = _check_benchmark_type(currency, benchmark_type)
+    benchmark_type_input = _get_benchmark_type(currency, benchmark_type)
+
+    if fixing_tenor is None:
+        fixing_tenor = BENCHMARK_TO_DEFAULT_FLOATING_RATE_TENORS[benchmark_type_input]
+
+    measure = f'FR:{forward_start_tenor}:{fixing_tenor}'
+    df = GsDataApi.get_mxapi_curve_measure('INDEX CURVE', benchmark_type_input, [fixing_tenor], [f'{currency.value}-1'],
+                                           measure, close_location=close_location, real_time=real_time)
+
+    series = ExtendedSeries(dtype=float) if df.empty else ExtendedSeries(df[measure])
+    series.dataset_ids = ()
     return series
 
 
@@ -1779,7 +2055,7 @@ def parse_meeting_date(valuation_date: Optional[GENERIC_DATE] = None):
             year, month, day = valuation_date.split('-')
             return datetime.date(int(year), int(month), int(day))
         else:
-            start, valuation_date = _range_from_pricing_date(None, valuation_date)
+            start, valuation_date = _range_from_pricing_date('USD', valuation_date)
             return valuation_date.date() if isinstance(valuation_date, pd.Timestamp) else valuation_date
     elif isinstance(valuation_date, datetime.date) or valuation_date is None:
         start, valuation_date = _range_from_pricing_date(None, valuation_date)

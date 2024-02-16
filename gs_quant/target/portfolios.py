@@ -23,6 +23,14 @@ from dataclasses_json import LetterCase, config, dataclass_json
 from enum import Enum
 
 
+class ActiveWeightType(EnumBase, Enum):    
+    
+    """Weight type used to calculate active holdings."""
+
+    Net = 'Net'
+    Gross = 'Gross'    
+
+
 class ClientPositionFilter(EnumBase, Enum):    
     
     """Filter used to select client positions from GRDB. 'oeId' selects all positions
@@ -128,7 +136,9 @@ class PCOTrade(Base):
 @dataclass_json(letter_case=LetterCase.CAMEL)
 @dataclass(unsafe_hash=True, repr=False)
 class TemporalPortfolioParameters(Base):
+    return_type: Optional[ReturnType] = field(default=None, metadata=field_metadata)
     refresh_interval: Optional[RefreshInterval] = field(default=None, metadata=field_metadata)
+    active_weight_type: Optional[ActiveWeightType] = field(default=None, metadata=field_metadata)
     name: Optional[str] = field(default=None, metadata=name_metadata)
 
 
@@ -162,6 +172,7 @@ class PCOPortfolioParameters(Base):
     investment_ratio: Optional[str] = field(default=None, metadata=field_metadata)
     roll_currency: Optional[Tuple[PCOParameterValues, ...]] = field(default=None, metadata=field_metadata)
     param_version: Optional[str] = field(default=None, metadata=field_metadata)
+    security_breakdown: Optional[PCOSecurityBreakdown] = field(default=None, metadata=field_metadata)
     name: Optional[str] = field(default=None, metadata=name_metadata)
 
 
@@ -182,9 +193,11 @@ class Portfolio(Base):
     last_updated_time: Optional[datetime.datetime] = field(default=None, metadata=field_metadata)
     owner_id: Optional[str] = field(default=None, metadata=field_metadata)
     report_ids: Optional[Tuple[str, ...]] = field(default=None, metadata=field_metadata)
+    scenario_ids: Optional[Tuple[str, ...]] = field(default=None, metadata=field_metadata)
     short_name: Optional[str] = field(default=None, metadata=field_metadata)
     underlying_portfolio_ids: Optional[Tuple[str, ...]] = field(default=None, metadata=field_metadata)
     tags: Optional[Tuple[str, ...]] = field(default=None, metadata=field_metadata)
     type_: Optional[PortfolioType] = field(default=None, metadata=config(field_name='type', exclude=exclude_none))
     parameters: Optional[DictBase] = field(default=None, metadata=field_metadata)
     aum_source: Optional[RiskAumSource] = field(default=None, metadata=field_metadata)
+    tag_name_hierarchy: Optional[Tuple[str, ...]] = field(default=None, metadata=field_metadata)

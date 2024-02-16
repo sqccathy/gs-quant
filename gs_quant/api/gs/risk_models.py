@@ -133,7 +133,9 @@ class GsFactorRiskModelApi(GsRiskModelApi):
                                    start_date: dt.date = None,
                                    end_date: dt.date = None,
                                    identifiers: List[str] = None,
-                                   include_performance_curve: bool = False) -> List[Dict]:
+                                   include_performance_curve: bool = False,
+                                   factor_categories: List[str] = None,
+                                   names: List[str] = None) -> List[Dict]:
         url = f'/risk/models/{model_id}/factors/data?'
         if start_date is not None:
             url += f'&startDate={start_date.strftime("%Y-%m-%d")}'
@@ -143,6 +145,11 @@ class GsFactorRiskModelApi(GsRiskModelApi):
             url += '&identifiers={ids}'.format(ids='&identifiers='.join(identifiers))
         if include_performance_curve:
             url += '&includePerformanceCurve=true'
+        if names:
+            url += '&name={names}'.format(names='&name='.join(names))
+        if factor_categories:
+            url += '&factorCategory={factor_categories}'\
+                .format(factor_categories='&factorCategory='.join(factor_categories))
         return GsSession.current._get(url)['results']
 
     @classmethod
@@ -165,7 +172,8 @@ class GsFactorRiskModelApi(GsRiskModelApi):
                                model_data: Union[Dict, RiskModelData],
                                partial_upload: bool = False,
                                target_universe_size: float = None,
-                               final_upload: bool = None) -> str:
+                               final_upload: bool = None,
+                               aws_upload: bool = False) -> str:
         url = f'/risk/models/data/{model_id}'
         if partial_upload:
             url += '?partialUpload=true'
@@ -174,6 +182,8 @@ class GsFactorRiskModelApi(GsRiskModelApi):
             if final_upload is not None:
                 final_upload_flag = 'true' if final_upload else 'false'
                 url += f'&finalUpload={final_upload_flag}'
+            if aws_upload:
+                url += '&awsUpload=true'
         return GsSession.current._post(url, model_data, timeout=200)
 
     @classmethod

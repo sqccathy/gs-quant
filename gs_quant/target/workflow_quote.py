@@ -33,6 +33,12 @@ class Encoding(EnumBase, Enum):
     ASCII = 'ASCII'    
 
 
+class HedgeModel(EnumBase, Enum):    
+    
+    Smile = 'Smile'
+    BlackScholes = 'BlackScholes'    
+
+
 class ImgType(EnumBase, Enum):    
     
     APNG = 'APNG'
@@ -58,7 +64,23 @@ class OverlayType(EnumBase, Enum):
     ProbabilityDistribution = 'ProbabilityDistribution'
     RealisedProbability = 'RealisedProbability'
     MacroEvents = 'MacroEvents'
+    MicroEvents = 'MicroEvents'
+    Gamma = 'Gamma'
     _None = 'None'    
+
+
+@dataclass
+class HedgeTypes(Base):
+    pass
+
+
+@handle_camel_case_args
+@dataclass_json(letter_case=LetterCase.CAMEL)
+@dataclass(unsafe_hash=True, repr=False)
+class CustomDeltaHedge(HedgeTypes):
+    amount: float = field(default=None, metadata=field_metadata)
+    type_: Optional[str] = field(init=False, default='CustomDeltaHedge', metadata=config(field_name='type', exclude=exclude_none))
+    name: Optional[str] = field(default=None, metadata=name_metadata)
 
 
 @handle_camel_case_args
@@ -66,7 +88,7 @@ class OverlayType(EnumBase, Enum):
 @dataclass(unsafe_hash=True, repr=False)
 class HyperLinkImageComments(CustomComments):
     url: Optional[str] = field(default=None, metadata=field_metadata)
-    comment_type: Optional[str] = field(default='hyperLinkImageComments', metadata=field_metadata)
+    comment_type: Optional[str] = field(init=False, default='hyperLinkImageComments', metadata=field_metadata)
     name: Optional[str] = field(default=None, metadata=name_metadata)
 
 
@@ -83,8 +105,26 @@ class MarketDataParameters(Base):
 @handle_camel_case_args
 @dataclass_json(letter_case=LetterCase.CAMEL)
 @dataclass(unsafe_hash=True, repr=False)
+class SalesPremiumAdjustment(Base):
+    value: Optional[float] = field(default=None, metadata=field_metadata)
+    unit: Optional[str] = field(default=None, metadata=field_metadata)
+    name: Optional[str] = field(default=None, metadata=name_metadata)
+
+
+@handle_camel_case_args
+@dataclass_json(letter_case=LetterCase.CAMEL)
+@dataclass(unsafe_hash=True, repr=False)
 class SolvingTarget(Base):
     constraint: Optional[float] = field(default=None, metadata=field_metadata)
+    name: Optional[str] = field(default=None, metadata=name_metadata)
+
+
+@handle_camel_case_args
+@dataclass_json(letter_case=LetterCase.CAMEL)
+@dataclass(unsafe_hash=True, repr=False)
+class WorkflowEntitlement(Base):
+    type_: str = field(default=None, metadata=config(field_name='type', exclude=exclude_none))
+    value: str = field(default=None, metadata=field_metadata)
     name: Optional[str] = field(default=None, metadata=name_metadata)
 
 
@@ -95,7 +135,7 @@ class BinaryImageComments(CustomComments):
     data: Optional[str] = field(default=None, metadata=field_metadata)
     img_type: Optional[ImgType] = field(default=None, metadata=field_metadata)
     encoding: Optional[Encoding] = field(default=None, metadata=field_metadata)
-    comment_type: Optional[str] = field(default='binaryImageComments', metadata=field_metadata)
+    comment_type: Optional[str] = field(init=False, default='binaryImageComments', metadata=field_metadata)
     name: Optional[str] = field(default=None, metadata=name_metadata)
 
 
@@ -107,6 +147,15 @@ class ChartingParameters(Base):
     overlay: Optional[OverlayType] = field(default=None, metadata=field_metadata)
     underlay: Optional[OverlayType] = field(default=None, metadata=field_metadata)
     description: Optional[str] = field(default=None, metadata=field_metadata)
+    name: Optional[str] = field(default=None, metadata=name_metadata)
+
+
+@handle_camel_case_args
+@dataclass_json(letter_case=LetterCase.CAMEL)
+@dataclass(unsafe_hash=True, repr=False)
+class DeltaHedge(HedgeTypes):
+    model: Optional[HedgeModel] = field(default=None, metadata=field_metadata)
+    type_: Optional[str] = field(init=False, default='DeltaHedge', metadata=config(field_name='type', exclude=exclude_none))
     name: Optional[str] = field(default=None, metadata=name_metadata)
 
 
@@ -129,6 +178,27 @@ class SolvingInfo(Base):
 @handle_camel_case_args
 @dataclass_json(letter_case=LetterCase.CAMEL)
 @dataclass(unsafe_hash=True, repr=False)
+class StrategyDescription(Base):
+    strategy_type: Optional[str] = field(default=None, metadata=field_metadata)
+    long_short: Optional[LongShort] = field(default=LongShort.Long, metadata=field_metadata)
+    assets: Optional[Tuple[str, ...]] = field(default=None, metadata=field_metadata)
+    asset_classes: Optional[Tuple[str, ...]] = field(default=None, metadata=field_metadata)
+    name: Optional[str] = field(default=None, metadata=name_metadata)
+
+
+@handle_camel_case_args
+@dataclass_json(letter_case=LetterCase.CAMEL)
+@dataclass(unsafe_hash=True, repr=False)
+class WorkflowEntitlements(Base):
+    version: Optional[int] = field(default=None, metadata=field_metadata)
+    readers: Optional[Tuple[WorkflowEntitlement, ...]] = field(default=None, metadata=field_metadata)
+    writers: Optional[Tuple[WorkflowEntitlement, ...]] = field(default=None, metadata=field_metadata)
+    name: Optional[str] = field(default=None, metadata=name_metadata)
+
+
+@handle_camel_case_args
+@dataclass_json(letter_case=LetterCase.CAMEL)
+@dataclass(unsafe_hash=True, repr=False)
 class VisualStructuringReport(QuoteReport):
     report_type: Optional[str] = field(default='VisualStructuringReport', metadata=field_metadata)
     position_set_id: Optional[str] = field(default=None, metadata=field_metadata)
@@ -139,6 +209,10 @@ class VisualStructuringReport(QuoteReport):
     solving_info: Optional[SolvingInfo] = field(default=None, metadata=field_metadata)
     charting_parameters: Optional[ChartingParameters] = field(default=None, metadata=field_metadata)
     comments: Optional[Tuple[CustomComments, ...]] = field(default=None, metadata=field_metadata)
+    strategy_description: Optional[StrategyDescription] = field(default=None, metadata=field_metadata)
+    asset_class: Optional[str] = field(default=None, metadata=field_metadata)
+    hedge_instruction: Optional[HedgeTypes] = field(default=None, metadata=field_metadata)
+    sales_premium_adjustment: Optional[SalesPremiumAdjustment] = field(default=None, metadata=field_metadata)
     name: Optional[str] = field(default=None, metadata=name_metadata)
 
 
@@ -157,6 +231,8 @@ class SaveQuoteRequest(Base):
     comments: Optional[str] = field(default=None, metadata=field_metadata)
     description: Optional[str] = field(default=None, metadata=field_metadata)
     original_workflow_id: Optional[str] = field(default=None, metadata=field_metadata)
+    is_sharing_parent: Optional[bool] = field(default=None, metadata=field_metadata)
+    entitlements: Optional[WorkflowEntitlements] = field(default=None, metadata=field_metadata)
     name: Optional[str] = field(default=None, metadata=name_metadata)
 
 
@@ -170,6 +246,9 @@ class WorkflowPosition(Base):
     comments: Optional[str] = field(default=None, metadata=field_metadata)
     original_workflow_id: Optional[str] = field(default=None, metadata=field_metadata)
     description: Optional[str] = field(default=None, metadata=field_metadata)
+    entitlements: Optional[WorkflowEntitlements] = field(default=None, metadata=field_metadata)
+    creator: Optional[str] = field(default=None, metadata=field_metadata)
+    is_read_only: Optional[bool] = field(default=None, metadata=field_metadata)
     name: Optional[str] = field(default=None, metadata=name_metadata)
 
 

@@ -24,7 +24,6 @@ from .core import DataFrameWithInfo, ErrorValue, UnsupportedValue, FloatWithInfo
     sort_values, MQVSValidatorDefnsWithInfo, MQVSValidatorDefn
 
 _logger = logging.getLogger(__name__)
-__scalar_risk_measures = ('EqDelta', 'EqGamma', 'EqVega')
 
 
 def __dataframe_handler(result: Iterable, mappings: tuple, risk_key: RiskKey, request_id: Optional[str] = None) \
@@ -187,7 +186,7 @@ def risk_vector_handler(result: dict, risk_key: RiskKey, _instrument: Instrument
                         request_id: Optional[str] = None) -> DataFrameWithInfo:
     assets = result['asset']
     # Handle equity risk measures which are really scalars
-    if len(assets) == 1 and risk_key.risk_measure.name in __scalar_risk_measures:
+    if len(assets) == 1 and risk_key.risk_measure.name.startswith('Eq'):
         return FloatWithInfo(risk_key, assets[0], request_id=request_id)
 
     for points, value in zip(result['points'], assets):
@@ -263,6 +262,46 @@ def risk_float_handler(result: dict, risk_key: RiskKey, _instrument: InstrumentB
     return FloatWithInfo(risk_key, result['values'][0], request_id=request_id)
 
 
+def map_coordinate_to_column(coordinate_struct, tag):
+    updated_struct = {tag + "_" + k: v for k, v in coordinate_struct.items() if
+                      k in ['type', 'asset', 'class_', 'point', 'quoteStyle']}
+    raw_point = updated_struct.get('point', '')
+    point = ';'.join(raw_point) if isinstance(raw_point, list) else raw_point
+    updated_struct['point'] = point
+    return updated_struct
+
+
+def mdapi_second_order_table_handler(result: dict, risk_key: RiskKey, _instrument: InstrumentBase,
+                                     request_id: Optional[str] = None) -> Union[DataFrameWithInfo, FloatWithInfo]:
+    if len(result['values']) == 1:
+        return risk_float_handler(result, risk_key, _instrument, request_id)
+
+    coordinate_pairs = []
+
+    if (len(result['innerPoints']) != len(result['outerPoints'])):
+        raise Exception("Found inner and outer points of different size")
+
+    for inner, outer, value in zip(result['innerPoints'], result['outerPoints'], result['values']):
+        row_dict = dict(map_coordinate_to_column(inner, 'inner'), **map_coordinate_to_column(outer, 'outer'))
+        row_dict.update({'value': value})
+        coordinate_pairs.append(row_dict)
+
+    mappings = (('inner_mkt_type', 'inner_type'),
+                ('inner_mkt_asset', 'inner_asset'),
+                ('inner_mkt_class', 'inner_class_'),
+                ('inner_mkt_point', 'inner_point'),
+                ('inner_mkt_quoting_style', 'inner_quotingStyle'),
+                ('outer_mkt_type', 'outer_type'),
+                ('outer_mkt_asset', 'outer_asset'),
+                ('outer_mkt_class', 'outer_class_'),
+                ('outer_mkt_point', 'outer_point'),
+                ('outer_mkt_quoting_style', 'outer_quotingStyle'),
+                ('value', 'value'),
+                ('permissions', 'permissions'))
+
+    return __dataframe_handler(coordinate_pairs, mappings, risk_key, request_id=request_id)
+
+
 def mdapi_table_handler(result: dict, risk_key: RiskKey, _instrument: InstrumentBase,
                         request_id: Optional[str] = None) -> DataFrameWithInfo:
     coordinates = []
@@ -270,7 +309,7 @@ def mdapi_table_handler(result: dict, risk_key: RiskKey, _instrument: Instrument
         raw_point = r['coordinate'].get('point', '')
         point = ';'.join(raw_point) if isinstance(raw_point, list) else raw_point
         r['coordinate'].update({'point': point})
-        r['coordinate'].update({'value': r['value']})
+        r['coordinate'].update({'value': r.get('value', None)})
         r['coordinate'].update({'permissions': r['permissions']})
         coordinates.append(r['coordinate'])
 
@@ -312,6 +351,64 @@ def mmapi_table_handler(result: dict, risk_key: RiskKey, _instrument: Instrument
     return __dataframe_handler(coordinates, mappings, risk_key, request_id=request_id)
 
 
+def mmapi_pca_table_handler(result: dict, risk_key: RiskKey, _instrument: InstrumentBase,
+                            request_id: Optional[str] = None) -> DataFrameWithInfo:
+    coordinates = []
+    for r in result['rows']:
+        raw_point = r['coordinate'].get('point', '')
+        point = ';'.join(raw_point) if isinstance(raw_point, list) else raw_point
+        r['coordinate'].update({'point': point})
+        r['coordinate'].update({'value': r['value']})
+        r['coordinate'].update({'layer1': r['layer1']})
+        r['coordinate'].update({'layer2': r['layer2']})
+        r['coordinate'].update({'layer3': r['layer3']})
+        r['coordinate'].update({'layer4': r['layer4']})
+        r['coordinate'].update({'level': r['level']})
+        r['coordinate'].update({'sensitivity': r['sensitivity']})
+        r['coordinate'].update({'irDelta': r['irDelta']})
+        coordinates.append(r['coordinate'])
+
+    mappings = (('mkt_type', 'type'),
+                ('mkt_asset', 'asset'),
+                ('mkt_class', 'assetClass'),
+                ('mkt_point', 'point'),
+                ('mkt_quoting_style', 'quotingStyle'),
+                ('value', 'value'),
+                ('layer1', 'layer1'),
+                ('layer2', 'layer2'),
+                ('layer3', 'layer3'),
+                ('layer4', 'layer4'),
+                ('level', 'level'),
+                ('sensitivity', 'sensitivity'),
+                ('irDelta', 'irDelta'))
+
+    return __dataframe_handler(coordinates, mappings, risk_key, request_id=request_id)
+
+
+def mmapi_pca_hedge_table_handler(result: dict, risk_key: RiskKey, _instrument: InstrumentBase,
+                                  request_id: Optional[str] = None) -> DataFrameWithInfo:
+    coordinates = []
+    for r in result['rows']:
+        raw_point = r['coordinate'].get('point', '')
+        point = ';'.join(raw_point) if isinstance(raw_point, list) else raw_point
+        r['coordinate'].update({'point': point})
+        r['coordinate'].update({'size': r['size']})
+        r['coordinate'].update({'fixedRate': r['fixedRate']})
+        r['coordinate'].update({'irDelta': r['irDelta']})
+        coordinates.append(r['coordinate'])
+
+    mappings = (('mkt_type', 'type'),
+                ('mkt_asset', 'asset'),
+                ('mkt_class', 'assetClass'),
+                ('mkt_point', 'point'),
+                ('mkt_quoting_style', 'quotingStyle'),
+                ('size', 'size'),
+                ('fixedRate', 'fixedRate'),
+                ('irDelta', 'irDelta'))
+
+    return __dataframe_handler(coordinates, mappings, risk_key, request_id=request_id)
+
+
 def mqvs_validators_handler(result: dict, risk_key: RiskKey, _instrument: InstrumentBase,
                             request_id: Optional[str] = None) -> MQVSValidatorDefnsWithInfo:
     validators = [MQVSValidatorDefn.from_dict(r) for r in result['validators']]
@@ -335,6 +432,8 @@ result_handlers = {
     'Message': message_handler,
     'MDAPITable': mdapi_table_handler,
     'MMAPITable': mmapi_table_handler,
+    'MMAPIPCATable': mmapi_pca_table_handler,
+    'MMAPIPCAHedgeTable': mmapi_pca_hedge_table_handler,
     'MQVSValidators': mqvs_validators_handler,
     'NumberAndUnit': number_and_unit_handler,
     'RequireAssets': required_assets_handler,
@@ -344,7 +443,7 @@ result_handlers = {
     'FixingTable': fixing_table_handler,
     'Table': simple_valtable_handler,
     'CanonicalProjectionTable': canonical_projection_table_handler,
-    'RiskSecondOrderVector': risk_float_handler,
+    'RiskSecondOrderVector': mdapi_second_order_table_handler,
     'RiskTheta': risk_float_handler,
     'Market': market_handler,
     'Unsupported': unsupported_handler

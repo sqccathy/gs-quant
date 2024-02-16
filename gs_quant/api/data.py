@@ -21,6 +21,7 @@ from typing import Optional, Union, List
 import inflection
 import pandas as pd
 
+from gs_quant.api.api_session import ApiWithCustomSession
 from gs_quant.api.fred.fred_query import FredQuery
 from gs_quant.base import Base
 from gs_quant.target.coordinates import MDAPIDataQuery
@@ -29,7 +30,7 @@ from gs_quant.target.data import DataQuery
 _logger = logging.getLogger(__name__)
 
 
-class DataApi(metaclass=ABCMeta):
+class DataApi(ApiWithCustomSession, metaclass=ABCMeta):
     @classmethod
     def query_data(cls, query: Union[DataQuery, FredQuery], dataset_id: str = None) -> Union[list, tuple]:
         raise NotImplementedError('Must implement get_data')
@@ -47,7 +48,8 @@ class DataApi(metaclass=ABCMeta):
         raise NotImplementedError('Must implement time_field')
 
     @classmethod
-    def construct_dataframe_with_types(cls, dataset_id: str, data: Union[Base, list, tuple, pd.Series]) -> pd.DataFrame:
+    def construct_dataframe_with_types(cls, dataset_id: str, data: Union[Base, list, tuple, pd.Series],
+                                       schema_varies=False, standard_fields=False) -> pd.DataFrame:
         raise NotImplementedError('Must implement time_field')
 
     @staticmethod
@@ -59,6 +61,7 @@ class DataApi(metaclass=ABCMeta):
             restrict_fields: bool = False,
             format: str = 'MessagePack',
             dates: List[dt.date] = None,
+            empty_intervals: Optional[bool] = None,
             **kwargs
     ):
         end_is_time = isinstance(end, dt.datetime)
@@ -90,7 +93,8 @@ class DataApi(metaclass=ABCMeta):
                 as_of_time=as_of,
                 since=since,
                 format=format,
-                dates=dates
+                dates=dates,
+                empty_intervals=empty_intervals
             )
 
         query_properties = query.properties()

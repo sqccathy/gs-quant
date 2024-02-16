@@ -107,6 +107,16 @@ class ApprovalComment(Base):
 @handle_camel_case_args
 @dataclass_json(letter_case=LetterCase.CAMEL)
 @dataclass(unsafe_hash=True, repr=False)
+class CryptoBasketParameters(Base):
+    initial_price: float = field(default=None, metadata=field_metadata)
+    target_notional: float = field(default=None, metadata=field_metadata)
+    divisor: float = field(default=None, metadata=field_metadata)
+    name: Optional[str] = field(default=None, metadata=name_metadata)
+
+
+@handle_camel_case_args
+@dataclass_json(letter_case=LetterCase.CAMEL)
+@dataclass(unsafe_hash=True, repr=False)
 class CustomBasketRiskParams(Base):
     risk_model: Optional[str] = field(default=None, metadata=field_metadata)
     fx_hedged: Optional[bool] = field(default=None, metadata=field_metadata)
@@ -140,6 +150,18 @@ class ISelectActionRequest(IndicesRebalanceActionTypes):
     action_comment: str = field(default=None, metadata=field_metadata)
     trader_attestations: Optional[Tuple[str, ...]] = field(default=None, metadata=field_metadata)
     user_action: Optional[str] = field(default=None, metadata=field_metadata)
+    name: Optional[str] = field(default=None, metadata=name_metadata)
+
+
+@handle_camel_case_args
+@dataclass_json(letter_case=LetterCase.CAMEL)
+@dataclass(unsafe_hash=True, repr=False)
+class ISelectError(Base):
+    status_code: Optional[str] = field(default=None, metadata=config(field_name='Status_Code', exclude=exclude_none))
+    validation_messages: Optional[Tuple[str, ...]] = field(default=None, metadata=config(field_name='Validation_Messages', exclude=exclude_none))
+    date_validation_errors: Optional[Tuple[str, ...]] = field(default=None, metadata=config(field_name='Date_Validation_Errors', exclude=exclude_none))
+    index_parameters_errors: Optional[Tuple[str, ...]] = field(default=None, metadata=config(field_name='Index_Parameters_Errors', exclude=exclude_none))
+    underlyer_validation_errors: Optional[Tuple[str, ...]] = field(default=None, metadata=config(field_name='Underlyer_Validation_Errors', exclude=exclude_none))
     name: Optional[str] = field(default=None, metadata=name_metadata)
 
 
@@ -181,11 +203,9 @@ class IndicesPositionInput(Base):
 @handle_camel_case_args
 @dataclass_json(letter_case=LetterCase.CAMEL)
 @dataclass(unsafe_hash=True, repr=False)
-class PositionPriceInput(Base):
-    asset_id: str = field(default=None, metadata=field_metadata)
-    quantity: Optional[float] = field(default=None, metadata=field_metadata)
-    weight: Optional[float] = field(default=None, metadata=field_metadata)
-    notional: Optional[float] = field(default=None, metadata=field_metadata)
+class Link(Base):
+    title: Optional[str] = field(default=None, metadata=field_metadata)
+    source: Optional[str] = field(default=None, metadata=field_metadata)
     name: Optional[str] = field(default=None, metadata=name_metadata)
 
 
@@ -226,9 +246,9 @@ class CustomBasketsPricingParameters(Base):
     target_notional: Optional[float] = field(default=None, metadata=field_metadata)
     pricing_date: Optional[datetime.date] = field(default=None, metadata=field_metadata)
     vendor: Optional[MarketDataVendor] = field(default=None, metadata=field_metadata)
-    weighting_strategy: Optional[str] = field(default=None, metadata=field_metadata)
+    weighting_strategy: Optional[PositionSetWeightingStrategy] = field(default=None, metadata=field_metadata)
     reweight: Optional[bool] = field(default=False, metadata=field_metadata)
-    asset_overwrite_data_set_id: Optional[str] = field(default='BASKET_EOD_OVERWRITE', metadata=field_metadata)
+    asset_overwrite_data_set_id: Optional[str] = field(default=None, metadata=field_metadata)
     name: Optional[str] = field(default=None, metadata=name_metadata)
 
 
@@ -237,6 +257,14 @@ class CustomBasketsPricingParameters(Base):
 @dataclass(unsafe_hash=True, repr=False)
 class CustomBasketsRiskScheduleInputs(Base):
     risk_models: Optional[Tuple[CustomBasketRiskParams, ...]] = field(default=None, metadata=field_metadata)
+    name: Optional[str] = field(default=None, metadata=name_metadata)
+
+
+@handle_camel_case_args
+@dataclass_json(letter_case=LetterCase.CAMEL)
+@dataclass(unsafe_hash=True, repr=False)
+class GIRDomain(Base):
+    document_links: Optional[Tuple[Link, ...]] = field(default=None, metadata=field_metadata)
     name: Optional[str] = field(default=None, metadata=name_metadata)
 
 
@@ -307,6 +335,28 @@ class CreditCustomBasketRebalanceInputs(IndicesRebalanceInputTypes):
 @handle_camel_case_args
 @dataclass_json(letter_case=LetterCase.CAMEL)
 @dataclass(unsafe_hash=True, repr=False)
+class CryptoBasketCreateInputs(IndicesConstructRequestTypes):
+    ticker: str = field(default=None, metadata=field_metadata)
+    name: str = field(default=None, metadata=field_metadata)
+    position_set: Tuple[PositionPriceInput, ...] = field(default=None, metadata=field_metadata)
+    asset_class: AssetClass = field(default='Digital Asset', metadata=field_metadata)
+    parameters: CryptoBasketParameters = field(default=None, metadata=field_metadata)
+    description: Optional[str] = field(default=None, metadata=field_metadata)
+
+
+@handle_camel_case_args
+@dataclass_json(letter_case=LetterCase.CAMEL)
+@dataclass(unsafe_hash=True, repr=False)
+class CryptoBasketRebalanceInputs(IndicesRebalanceInputTypes):
+    asset_class: AssetClass = field(default='Digital Asset', metadata=field_metadata)
+    position_set: Tuple[PositionPriceInput, ...] = field(default=None, metadata=field_metadata)
+    parameters: CryptoBasketParameters = field(default=None, metadata=field_metadata)
+    name: Optional[str] = field(default=None, metadata=name_metadata)
+
+
+@handle_camel_case_args
+@dataclass_json(letter_case=LetterCase.CAMEL)
+@dataclass(unsafe_hash=True, repr=False)
 class CustomBasketsBackcastInputs(Base):
     position_set: Tuple[IndicesPositionSet, ...] = field(default=None, metadata=field_metadata)
     name: Optional[str] = field(default=None, metadata=name_metadata)
@@ -335,6 +385,8 @@ class CustomBasketsCreateInputs(IndicesConstructRequestTypes):
     allow_ca_restricted_assets: Optional[bool] = field(default=False, metadata=config(field_name='allowCARestrictedAssets', exclude=exclude_none))
     vendor: Optional[str] = field(default=None, metadata=field_metadata)
     default_backcast: Optional[bool] = field(default=True, metadata=field_metadata)
+    action_date: Optional[datetime.date] = field(default=None, metadata=field_metadata)
+    preferred_risk_model: Optional[str] = field(default=None, metadata=field_metadata)
 
 
 @handle_camel_case_args
@@ -352,6 +404,9 @@ class CustomBasketsEditInputs(Base):
     clone_parent_id: Optional[str] = field(default=None, metadata=field_metadata)
     hedge_id: Optional[str] = field(default=None, metadata=field_metadata)
     portfolio_id: Optional[str] = field(default=None, metadata=field_metadata)
+    vendor: Optional[str] = field(default=None, metadata=field_metadata)
+    action_date: Optional[datetime.date] = field(default=None, metadata=field_metadata)
+    preferred_risk_model: Optional[str] = field(default=None, metadata=field_metadata)
 
 
 @handle_camel_case_args
@@ -368,6 +423,10 @@ class CustomBasketsRebalanceInputs(Base):
     hedge_id: Optional[str] = field(default=None, metadata=field_metadata)
     portfolio_id: Optional[str] = field(default=None, metadata=field_metadata)
     save_as_draft: Optional[bool] = field(default=False, metadata=field_metadata)
+    allow_in_position_rebalance: Optional[bool] = field(default=False, metadata=field_metadata)
+    action_date: Optional[datetime.date] = field(default=None, metadata=field_metadata)
+    preferred_risk_model: Optional[str] = field(default=None, metadata=field_metadata)
+    on_behalf_of: Optional[str] = field(default=None, metadata=field_metadata)
     name: Optional[str] = field(default=None, metadata=name_metadata)
 
 
@@ -399,9 +458,11 @@ class DynamicConstructionResponse(IndicesConstructResponseTypes):
 class ISelectRebalance(Base):
     new_weights: Optional[Tuple[ISelectNewWeight, ...]] = field(default=None, metadata=field_metadata)
     rebalance_date: Optional[str] = field(default=None, metadata=field_metadata)
+    observation_date: Optional[str] = field(default=None, metadata=field_metadata)
     new_parameters: Optional[Tuple[ISelectNewParameter, ...]] = field(default=None, metadata=field_metadata)
     index_parameters: Optional[Tuple[ISelectIndexParameters, ...]] = field(default=None, metadata=field_metadata)
     waiver_requested: Optional[bool] = field(default=None, metadata=field_metadata)
+    custom_basket_import: Optional[str] = field(default=None, metadata=field_metadata)
     name: Optional[str] = field(default=None, metadata=name_metadata)
 
 
@@ -416,10 +477,12 @@ class ISelectRequest(IndicesRebalanceInputTypes):
     index_parameters: Optional[Tuple[ISelectIndexParameter, ...]] = field(default=None, metadata=field_metadata)
     new_weights: Optional[Tuple[ISelectNewWeight, ...]] = field(default=None, metadata=field_metadata)
     new_units: Optional[Tuple[ISelectNewUnit, ...]] = field(default=None, metadata=field_metadata)
+    observation_date: Optional[str] = field(default=None, metadata=field_metadata)
     entry_type: Optional[str] = field(default=None, metadata=field_metadata)
     waiver_requested: Optional[bool] = field(default=None, metadata=field_metadata)
     presubmit: Optional[bool] = field(default=None, metadata=field_metadata)
     requester_id: Optional[str] = field(default=None, metadata=field_metadata)
+    custom_basket_import: Optional[str] = field(default=None, metadata=field_metadata)
     name: Optional[str] = field(default=None, metadata=name_metadata)
 
 

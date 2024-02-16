@@ -249,7 +249,8 @@ class Portfolio(PriceableImpl):
     @classmethod
     def get(cls,
             portfolio_id: str = None,
-            portfolio_name: str = None):
+            portfolio_name: str = None,
+            query_instruments: Optional[bool] = False):
         if portfolio_name:
             portfolio = GsPortfolioApi.get_portfolio_by_name(portfolio_name)
             portfolio_id = portfolio.id
@@ -257,7 +258,8 @@ class Portfolio(PriceableImpl):
         portfolio = GsPortfolioApi.get_portfolio(portfolio_id)
         ret = Portfolio(name=portfolio.name)
         ret.__id = portfolio_id
-        ret._get_instruments(position_date, True)
+        if query_instruments:
+            ret._get_instruments(position_date, True)
         return ret
 
     @classmethod
@@ -547,7 +549,7 @@ class Portfolio(PriceableImpl):
 
             for result in results:
                 if market_data is not None:
-                    update_market_data(market_data, result.base_market.market_data_dict)
+                    update_market_data(market_data, result.market_data_dict)
                 else:
                     for market in result.values():
                         update_market_data(overlay_markets.setdefault(market, {}), market.market_data)

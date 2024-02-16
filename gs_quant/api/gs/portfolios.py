@@ -15,6 +15,8 @@ under the License.
 """
 import datetime as dt
 import logging
+import deprecation
+from time import sleep
 from typing import Tuple, Union, List, Dict
 
 from gs_quant.common import PositionType
@@ -24,24 +26,34 @@ from gs_quant.session import GsSession
 from gs_quant.target.portfolios import Portfolio, Position, PositionSet
 from gs_quant.target.reports import Report
 from gs_quant.target.risk_models import RiskModelTerm as Term
-from gs_quant.target.workflow_quote import WorkflowPosition, WorkflowPositionsResponse, SaveQuoteRequest
+from gs_quant.workflow import WorkflowPosition, WorkflowPositionsResponse, SaveQuoteRequest
 
 _logger = logging.getLogger(__name__)
 
 
 class GsPortfolioApi:
-    """GS Asset API client implementation"""
+    """GS Asset API client implementation.
+
+    To pass additional query parameters, use kwargs."""
 
     @classmethod
     def get_portfolios(cls,
                        portfolio_ids: List[str] = None,
                        portfolio_names: List[str] = None,
-                       limit: int = 100) -> Tuple[Portfolio, ...]:
+                       limit: int = 100,
+                       **kwargs) -> Tuple[Portfolio, ...]:
         url = '/portfolios?'
         if portfolio_ids:
             url += f'&id={"&id=".join(portfolio_ids)}'
         if portfolio_names:
             url += f'&name={"&name=".join(portfolio_names)}'
+        for k, v in kwargs.items():
+            if isinstance(v, list):
+                for i in v:
+                    # in case v is not a list of strings
+                    url += f'&{k}={i}'
+            else:
+                url += f'&{k}={v}'
         return GsSession.current._get(f'{url}&limit={limit}', cls=Portfolio)['results']
 
     @classmethod
@@ -186,6 +198,7 @@ class GsPortfolioApi:
                            start_date: dt.date,
                            end_date: dt.date,
                            fields: List[str] = None,
+                           performance_report_id: str = None,
                            position_type: PositionType = None,
                            include_all_business_days: bool = False) -> List[dict]:
         start_date_str = start_date.isoformat()
@@ -193,6 +206,8 @@ class GsPortfolioApi:
         url = f'/portfolios/{portfolio_id}/positions/data?startDate={start_date_str}&endDate={end_date_str}'
         if fields is not None:
             url += '&fields='.join([''] + fields)
+        if performance_report_id is not None:
+            url += f'&reportId={performance_report_id}'
         if position_type is not None:
             url += '&type=' + position_type.value
         if include_all_business_days:
@@ -212,7 +227,7 @@ class GsPortfolioApi:
     def update_workflow_quote(cls, quote_id: str, request: SaveQuoteRequest):
         headers = {'Content-Type': 'application/x-msgpack'}
         return GsSession.current._put('/risk-internal/quote/workflow/save/{id}'.format(id=quote_id), tuple([request]),
-                                      request_headers=headers)
+                                      request_headers=headers)['results']
 
     @classmethod
     def save_workflow_quote(cls, request: SaveQuoteRequest) -> str:
@@ -237,7 +252,7 @@ class GsPortfolioApi:
             return ()
 
     @classmethod
-    def get_shared_workflow_quote(cls, workflow_id: str) -> Tuple[WorkflowPosition]:
+    def get_shared_workflow_quote(cls, workflow_id: str) -> Tuple[WorkflowPosition, ...]:
         url = f'/risk-internal/quote/workflow/shared/{workflow_id}'
         results = GsSession.current._get(url, timeout=181)
         wf_pos_res = WorkflowPositionsResponse.from_dict(results)
@@ -255,8 +270,12 @@ class GsPortfolioApi:
         return GsSession.current._get(f'/portfolios/{portfolio_id}/models?sortByTerm={term.value}')['results']
 
     @classmethod
-    def get_reports(cls, portfolio_id: str) -> Tuple[Report, ...]:
-        return GsSession.current._get('/portfolios/{id}/reports'.format(id=portfolio_id), cls=Report)['results']
+    def get_reports(cls, portfolio_id: str, tags: Dict) -> Tuple[Report, ...]:
+        results = GsSession.current._get('/portfolios/{id}/reports'.format(id=portfolio_id), cls=Report)['results']
+        if tags is not None:
+            tags_as_list = [{'name': key, 'value': tags[key]} for key in tags]
+            results = [r for r in results if r.parameters.tags == tags_as_list]
+        return results
 
     @classmethod
     def schedule_reports(cls,
@@ -269,7 +288,18 @@ class GsPortfolioApi:
             payload['startDate'] = start_date.isoformat()
         if end_date is not None:
             payload['endDate'] = end_date.isoformat()
-        return GsSession.current._post('/portfolios/{id}/schedule'.format(id=portfolio_id), payload)
+        portfolio = cls.get_portfolio(portfolio_id)
+        if portfolio.tag_name_hierarchy is None or len(portfolio.tag_name_hierarchy) == 0:
+            GsSession.current._post(f'/portfolios/{portfolio_id}/schedule', payload)
+        else:
+            count = 10
+            for report_id in portfolio.report_ids:
+                if count == 0:
+                    sleep(2)
+                    count = 10
+                else:
+                    GsSession.current._post(f'/reports/{report_id}/schedule', payload)
+                    count -= 1
 
     @classmethod
     def get_schedule_dates(cls,
@@ -280,6 +310,9 @@ class GsPortfolioApi:
                 dt.datetime.strptime(results['endDate'], '%Y-%m-%d').date()]
 
     @classmethod
+    @deprecation.deprecated(deprecated_in='1.0.10',
+                            details='GsPortfolioApi.get_custom_aum is now deprecated, please use '
+                                    'GsReportApi.get_custom_aum instead.')
     def get_custom_aum(cls,
                        portfolio_id: str,
                        start_date: dt.date = None,
@@ -292,6 +325,9 @@ class GsPortfolioApi:
         return GsSession.current._get(url)['data']
 
     @classmethod
+    @deprecation.deprecated(deprecated_in='1.0.10',
+                            details='GsPortfolioApi.upload_custom_aum is now deprecated, please use '
+                                    'GsReportApi.upload_custom_aum instead.')
     def upload_custom_aum(cls,
                           portfolio_id: str,
                           aum_data: List[Dict],
@@ -303,16 +339,23 @@ class GsPortfolioApi:
         return GsSession.current._post(url, payload)
 
     @classmethod
+    def update_portfolio_tree(cls, portfolio_id: str):
+        return GsSession.current._post(f'/portfolios/{portfolio_id}/tree', {})
+
+    @classmethod
     def get_attribution(cls,
                         portfolio_id: str,
                         start_date: dt.date = None,
                         end_date: dt.date = None,
-                        currency: Currency = None) -> Dict:
+                        currency: Currency = None,
+                        performance_report_id: str = None) -> Dict:
         url = f'/attribution/{portfolio_id}?'
         if start_date:
             url += f"&startDate={start_date.strftime('%Y-%m-%d')}"
         if end_date:
             url += f"&endDate={end_date.strftime('%Y-%m-%d')}"
         if currency:
-            url += f"currency={currency.value}"
+            url += f"&currency={currency.value}"
+        if performance_report_id:
+            url += f'&reportId={performance_report_id}'
         return GsSession.current._get(url)['results']

@@ -25,10 +25,12 @@ from enum import Enum
 
 class FactorRiskTableMode(EnumBase, Enum):    
     
-    """View the table data in tables endpoint as either Exposure or Z-Score data."""
+    """View the data in the tables endpoint in the specified mode."""
 
     Exposure = 'Exposure'
-    ZScore = 'ZScore'    
+    ZScore = 'ZScore'
+    Pnl = 'Pnl'
+    Mctr = 'Mctr'    
 
 
 class OptimizationStatus(EnumBase, Enum):    
@@ -58,6 +60,14 @@ class OptimizationUrgency(EnumBase, Enum):
     MEDIUM = 'MEDIUM'
     HIGH = 'HIGH'
     VERY_HIGH = 'VERY_HIGH'    
+
+
+class RiskViewsUnit(EnumBase, Enum):    
+    
+    """View data return type."""
+
+    Notional = 'Notional'
+    Percent = 'Percent'    
 
 
 @handle_camel_case_args
@@ -422,6 +432,8 @@ class LiquidityConstituent(Base):
     beta_adjusted_exposure: Optional[float] = field(default=None, metadata=field_metadata)
     adv_bucket: Optional[object] = field(default=None, metadata=field_metadata)
     settlement_date: Optional[datetime.date] = field(default=None, metadata=field_metadata)
+    transition_plan_transparency_percentile: Optional[float] = field(default=None, metadata=field_metadata)
+    transition_performance_percentile: Optional[float] = field(default=None, metadata=field_metadata)
 
 
 @handle_camel_case_args
@@ -570,7 +582,7 @@ class LiquidityResponse(Base):
     assets_not_in_cost_predict_model: Optional[Tuple[str, ...]] = field(default=None, metadata=field_metadata)
     assets_without_compositions: Optional[Tuple[str, ...]] = field(default=None, metadata=field_metadata)
     error_message: Optional[str] = field(default=None, metadata=field_metadata)
-    name: Optional[str] = field(default=None, metadata=name_metadata)
+    name: Optional[str] = field(default=None, metadata=field_metadata)
 
 
 @handle_camel_case_args

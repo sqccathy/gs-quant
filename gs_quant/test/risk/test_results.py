@@ -20,13 +20,14 @@ import gs_quant.risk as risk
 import numpy as np
 import pytest
 from gs_quant.instrument import IRSwap, IRBasisSwap, IRSwaption, FXMultiCrossBinary, FXMultiCrossBinaryLeg
-from gs_quant.markets import HistoricalPricingContext, PricingContext, CloseMarket
+from gs_quant.markets import HistoricalPricingContext, PricingContext, CloseMarket, MarketDataCoordinate
 from gs_quant.markets.portfolio import Portfolio
-from gs_quant.risk import MultiScenario
+from gs_quant.risk import MultiScenario, ResolvedInstrumentValues
 from gs_quant.risk import Price, RollFwd, CurveScenario, ErrorValue, DataFrameWithInfo, AggregationLevel, PnlExplain
 from gs_quant.risk.core import aggregate_risk, SeriesWithInfo, FloatWithInfo
 from gs_quant.risk.results import MultipleScenarioFuture
 from gs_quant.risk.results import MultipleScenarioResult
+from gs_quant.risk.transform import ResultWithInfoAggregator
 from gs_quant.target.common import MarketDataPattern
 from gs_quant.test.utils.mock_calc import MockCalc
 
@@ -197,6 +198,13 @@ def test_historical_multi_scenario(mocker):
     futures = res.futures
     assert isinstance(futures[0], MultipleScenarioFuture)
     assert isinstance(futures[0].result(), MultipleScenarioResult)
+
+
+def test_series_with_info_arithmetics(mocker):
+    series_info = SeriesWithInfo([2.0, 4.0], [dt.date(2021, 4, 11), dt.date(2022, 4, 11)])
+    scaled = series_info * 100
+    assert isinstance(scaled, SeriesWithInfo)
+    assert tuple(scaled.values) == (200., 400.)
 
 
 def test_composite_multi_scenario(mocker):
@@ -564,6 +572,19 @@ def test_unsupported_error_datums(mocker):
     assert isinstance(f4['value'].values[0], ErrorValue)
 
 
+def test_resolution_of_error_trade(mocker):
+    with MockCalc(mocker):
+        error_trade = IRSwap(notional_currency='EUR', termination_date='10y', fixed_rate='bob')
+        resolved_trade = error_trade.calc(ResolvedInstrumentValues)
+        assert isinstance(resolved_trade, ErrorValue)
+
+        try:
+            _ = resolved_trade.fixed_rate  # this should fail
+            assert 1 == 2
+        except AttributeError as e:
+            assert 'Error was' in str(e)
+
+
 def test_resolve_to_frame(mocker):
     # makes sure resolving portfolio doesn't break to_frame
     with MockCalc(mocker):
@@ -594,7 +615,7 @@ def test_leg_valuations(mocker):
     assert 'path' in f1.columns
 
 
-def test_aggregation_with_diff_risk_keys(mocker):
+def test_aggregation_with_heterogeous_types(mocker):
     with MockCalc(mocker):
         portfolio1 = Portfolio([IRSwaption('Pay', '10y', 'EUR', expiration_date='3m', name='EUR3m10ypayer')])
         portfolio2 = Portfolio([IRSwaption('Pay', '10y', 'EUR', expiration_date='6m', name='EUR6m10ypayer')])
@@ -633,3 +654,35 @@ def test_aggregation_with_empty_measures(mocker):
         risk_swaption_2 = result_explain[1]['value'].sum()
 
         assert total_risk == risk_swaption_1 + risk_swaption_2
+
+
+def test_filter_risk(mocker):
+    with MockCalc(mocker):
+        result = swap_1.calc(risk.IRDelta)
+
+    coord = MarketDataCoordinate.from_string('IR_EUR_SWAP_5Y')
+
+    df = result.filter_by_coord(coord)
+    assert len(result) > 1
+    assert len(df) == 1
+
+
+def test_transformation(mocker):
+    with MockCalc(mocker):
+        ladder_res = usd_port.calc(risk.IRDelta)
+
+    transformed_res = ladder_res.transform(ResultWithInfoAggregator())
+    np.testing.assert_almost_equal(transformed_res.aggregate(), ladder_res.to_frame()['value'].sum())
+
+
+def test_aggregation_with_identical_trades(mocker):
+    with MockCalc(mocker):
+        swaptions = (IRSwaption(notional_currency='EUR', termination_date='7y', expiration_date='1y',
+                                pay_or_receive='Receive', strike='ATM+35', name='trade_1'),
+                     IRSwaption(notional_currency='EUR', termination_date='7y', expiration_date='1y',
+                                pay_or_receive='Receive', strike='ATM+35', name='trade_2'))
+        portfolio = Portfolio(swaptions)
+
+        delta = portfolio.calc(risk.IRDelta)
+        transformed_res = delta.transform(ResultWithInfoAggregator())
+        np.testing.assert_almost_equal(transformed_res.aggregate(), delta.to_frame()['value'].sum())

@@ -25,7 +25,7 @@ from functools import update_wrapper
 from typing import Iterable, Mapping, Optional, Union, Tuple
 
 import numpy as np
-from dataclasses_json import config, global_config
+from dataclasses_json import config, global_config, LetterCase, dataclass_json
 from dataclasses_json.core import _decode_generic, _is_supported_generic
 from inflection import camelize, underscore
 
@@ -42,11 +42,12 @@ __setattr__ = object.__setattr__
 
 _rename_cache = {}
 
+
 def exclude_none(o):
     return o is None
 
 
-def exlude_always(_o):
+def exclude_always(_o):
     return True
 
 
@@ -63,6 +64,7 @@ def _get_underscore(arg):
         _rename_cache[arg] = underscore(arg)
 
     return _rename_cache[arg]
+
 
 def handle_camel_case_args(cls):
     init = cls.__init__
@@ -89,14 +91,26 @@ def handle_camel_case_args(cls):
 
 
 field_metadata = config(exclude=exclude_none)
-name_metadata = config(exclude=exlude_always)
+name_metadata = config(exclude=exclude_always)
 
 
 class RiskKey(namedtuple('RiskKey', ('provider', 'date', 'market', 'params', 'scenario', 'risk_measure'))):
 
     @property
     def ex_measure(self):
-        return RiskKey(self.provider, self.date, self.market, self.params, self.scenario, None)
+        from gs_quant.target.common import RiskRequestParameters
+        return RiskKey(self.provider, self.date, self.market,
+                       RiskRequestParameters(self.params.csa_term, self.params.raw_results, False,
+                                             self.params.market_behaviour),
+                       self.scenario, None)
+
+    @property
+    def ex_historical_diddle(self):
+        from gs_quant.target.common import RiskRequestParameters
+        return RiskKey(self.provider, self.date, self.market,
+                       RiskRequestParameters(self.params.csa_term, self.params.raw_results, False,
+                                             self.params.market_behaviour),
+                       self.scenario, self.risk_measure)
 
     @property
     def fields(self):
@@ -118,17 +132,29 @@ class EnumBase:
         return self.value < other.value
 
     def __repr__(self):
+        return str(self)
+
+    def __str__(self):
         return self.value
 
 
 class HashableDict(dict):
 
+    @staticmethod
+    def hashables(in_dict) -> Tuple:
+        hashables = []
+        for it in in_dict.items():
+            if isinstance(it[1], dict):
+                hashables.append((it[0], HashableDict.hashables(it[1])))
+            else:
+                hashables.append(it)
+        return tuple(hashables)
+
     def __hash__(self):
-        return hash(tuple(self.items()))
+        return hash(HashableDict.hashables(self))
 
 
 class DictBase(HashableDict):
-
     _PROPERTIES = set()
 
     def __init__(self, *args, **kwargs):
@@ -276,6 +302,11 @@ class Base(ABC):
         """The public property names of this class"""
         return set(f[:-1] if f[-1] == '_' else f for f in cls._fields_by_name().keys())
 
+    @classmethod
+    def properties_init(cls) -> set:
+        """The public property names of this class"""
+        return set(f[:-1] if f[-1] == '_' else f for f, v in cls._fields_by_name().items() if v.init)
+
     def as_dict(self, as_camel_case: bool = False) -> dict:
         """Dictionary of the public, non-null properties and values"""
 
@@ -319,6 +350,7 @@ class Base(ABC):
                 __setattr__(self, fld.name, __getattribute__(instance, fld.name))
 
 
+@dataclass_json
 @dataclass
 class Priceable(Base):
 
@@ -461,7 +493,6 @@ class RiskMeasureParameter(Base, ABC):
 
 @dataclass
 class InstrumentBase(Base, ABC):
-
     quantity_: InitVar[float] = field(default=1, init=False)
 
     @property
@@ -582,6 +613,15 @@ def get_enum_value(enum_type: EnumMeta, value: Union[EnumBase, str]):
     return enum_value
 
 
+@handle_camel_case_args
+@dataclass_json(letter_case=LetterCase.CAMEL)
+@dataclass(unsafe_hash=True, repr=False)
+class MarketDataScenario(Base):
+    scenario: Scenario = field(default=None, metadata=field_metadata)
+    subtract_base: Optional[bool] = field(default=False, metadata=field_metadata)
+    name: Optional[str] = field(default=None, metadata=name_metadata)
+
+
 # Yes, I know this is a little evil ...
 global_config.encoders[dt.date] = dt.date.isoformat
 global_config.encoders[Optional[dt.date]] = encode_date_or_str
@@ -604,6 +644,5 @@ global_config.decoders[QuoteReport] = decode_quote_report
 global_config.decoders[Optional[Tuple[QuoteReport, ...]]] = decode_quote_reports
 global_config.decoders[CustomComments] = decode_custom_comment
 global_config.decoders[Optional[Tuple[CustomComments, ...]]] = decode_custom_comments
-
 global_config.encoders[Market] = encode_dictable
 global_config.encoders[Optional[Market]] = encode_dictable

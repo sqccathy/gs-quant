@@ -14,29 +14,32 @@ specific language governing permissions and limitations
 under the License.
 """
 import datetime as dt
+import json
 import logging
 import time
+from copy import copy
 from enum import Enum
 from itertools import chain
 from typing import Iterable, List, Optional, Tuple, Union, Dict
 
 import cachetools
 import pandas as pd
-import numpy as np
 from cachetools import TTLCache
+from dateutil import parser
 
 from gs_quant.api.data import DataApi
 from gs_quant.base import Base
 from gs_quant.data.core import DataContext, DataFrequency
 from gs_quant.data.log import log_debug, log_warning
 from gs_quant.errors import MqValueError
+from gs_quant.json_encoder import JSONEncoder
 from gs_quant.markets import MarketDataCoordinate
-from gs_quant.session import GsSession
 from gs_quant.target.common import MarketDataVendor, PricingLocation, Format
 from gs_quant.target.coordinates import MDAPIDataBatchResponse, MDAPIDataQuery, MDAPIDataQueryResponse, MDAPIQueryField
 from gs_quant.target.data import DataQuery, DataQueryResponse, DataSetCatalogEntry
 from gs_quant.target.data import DataSetEntity, DataSetFieldEntity
 from .assets import GsIdType
+from ..api_cache import ApiRequestCache
 from ...target.assets import EntityQuery, FieldFilterMap
 
 _logger = logging.getLogger(__name__)
@@ -165,9 +168,27 @@ class QueryType(Enum):
 class GsDataApi(DataApi):
     __definitions = {}
     __asset_coordinates_cache = TTLCache(10000, 86400)
+    _api_request_cache: ApiRequestCache = None
     DEFAULT_SCROLL = '30s'
 
     # DataApi interface
+
+    @classmethod
+    def set_api_request_cache(cls, cache: ApiRequestCache):
+        cls._api_request_cache = cache
+
+    @classmethod
+    def _post_with_cache_check(cls, url, **kwargs):
+        session = cls.get_session()
+        if cls._api_request_cache:
+            cache_key = (url, 'POST', kwargs)
+            cached_val = cls._api_request_cache.get(session, cache_key)
+            if cached_val is not None:
+                return cached_val
+        result = session._post(url, **kwargs)
+        if cls._api_request_cache:
+            cls._api_request_cache.put(session, cache_key, result)
+        return result
 
     @classmethod
     def query_data(cls, query: Union[DataQuery, MDAPIDataQuery], dataset_id: str = None,
@@ -183,18 +204,27 @@ class GsDataApi(DataApi):
         response: Union[DataQueryResponse, dict] = cls.execute_query(dataset_id, query)
         return cls.get_results(dataset_id, response, query)
 
-    @staticmethod
-    def execute_query(dataset_id: str, query: Union[DataQuery, MDAPIDataQuery]):
+    @classmethod
+    def execute_query(cls, dataset_id: str, query: Union[DataQuery, MDAPIDataQuery]):
         kwargs = {'payload': query}
         if getattr(query, 'format', None) in (Format.MessagePack, 'MessagePack'):
             kwargs['request_headers'] = {'Accept': 'application/msgpack'}
-        return GsSession.current._post('/data/{}/query'.format(dataset_id), **kwargs)
+        return cls._post_with_cache_check('/data/{}/query'.format(dataset_id), **kwargs)
 
     @staticmethod
-    def get_results(dataset_id: str, response: Union[DataQueryResponse, dict], query: DataQuery) -> list:
+    def get_results(dataset_id: str, response: Union[DataQueryResponse, dict], query: DataQuery) -> \
+            Union[list, Tuple[list, list]]:
         if isinstance(response, dict):
             total_pages = response.get('totalPages')
-            results = response.get('data', ())
+            results = response.get('data', [])
+            if 'groups' in response:
+                group_by = set()
+                for group in response['groups']:
+                    group_by.update(group['context'].keys())
+                    for row in group['data']:
+                        row.update(group['context'])
+                    results += group['data']
+                results = (results, list(group_by))
         else:
             total_pages = response.total_pages if response.total_pages is not None else 0
             results = response.data if response.data is not None else ()
@@ -218,10 +248,10 @@ class GsDataApi(DataApi):
         if timeout is not None:
             kwargs['timeout'] = timeout
         if getattr(query, 'marketDataCoordinates', None):
-            result = GsSession.current._post('/data/coordinates/query/last', payload=query, **kwargs)
+            result = cls._post_with_cache_check('/data/coordinates/query/last', payload=query, **kwargs)
             return result.get('responses', ())
         else:
-            result = GsSession.current._post('/data/{}/last/query'.format(dataset_id), payload=query, **kwargs)
+            result = cls._post_with_cache_check('/data/{}/last/query'.format(dataset_id), payload=query, **kwargs)
             return result.get('data', ())
 
     @classmethod
@@ -235,6 +265,20 @@ class GsDataApi(DataApi):
         return definition.dimensions.timeField
 
     # GS-specific functionality
+    @classmethod
+    def _build_params(cls, scroll: str, scroll_id: Optional[str], limit: int, offset: int, fields: List[str],
+                      include_history: bool, **kwargs) -> dict:
+        params = {'limit': limit or 4000, 'scroll': scroll}
+        if scroll_id:
+            params['scrollId'] = scroll_id
+        if offset:
+            params['offset'] = offset
+        if fields:
+            params['fields'] = fields
+        if include_history:
+            params['includeHistory'] = 'true'
+        params = {**params, **kwargs}
+        return params
 
     @classmethod
     def get_coverage(
@@ -248,50 +292,62 @@ class GsDataApi(DataApi):
             include_history: bool = False,
             **kwargs
     ) -> List[dict]:
-        params = {
-            'limit': limit or 4000,
-            'scroll': scroll
-        }
-
-        if scroll_id:
-            params['scrollId'] = scroll_id
-        if offset:
-            params['offset'] = offset
-        if fields:
-            params['fields'] = fields
-        if include_history:
-            params['includeHistory'] = 'true'
-
-        params = {**params, **kwargs}
-        body = GsSession.current._get(f'/data/{dataset_id}/coverage', payload=params)
+        session = cls.get_session()
+        params = cls._build_params(scroll, scroll_id, limit, offset, fields, include_history, **kwargs)
+        body = session._get(f'/data/{dataset_id}/coverage', payload=params)
         results = scroll_results = body['results']
         total_results = body['totalResults']
         while len(scroll_results) and len(results) < total_results:
             params['scrollId'] = body['scrollId']
-            body = GsSession.current._get(f'/data/{dataset_id}/coverage', payload=params)
+            body = session._get(f'/data/{dataset_id}/coverage', payload=params)
             scroll_results = body['results']
             results += scroll_results
 
         return results
 
     @classmethod
+    async def get_coverage_async(
+            cls,
+            dataset_id: str,
+            scroll: str = DEFAULT_SCROLL,
+            scroll_id: Optional[str] = None,
+            limit: int = None,
+            offset: int = None,
+            fields: List[str] = None,
+            include_history: bool = False,
+            **kwargs
+    ) -> List[dict]:
+        session = cls.get_session()
+        params = cls._build_params(scroll, scroll_id, limit, offset, fields, include_history, **kwargs)
+        body = await session._get_async(f'/data/{dataset_id}/coverage', payload=params)
+        results = scroll_results = body['results']
+        total_results = body['totalResults']
+        while len(scroll_results) and len(results) < total_results:
+            params['scrollId'] = body['scrollId']
+            body = await session._get_async(f'/data/{dataset_id}/coverage', payload=params)
+            scroll_results = body['results']
+            if scroll_results:
+                results += scroll_results
+        return results
+
+    @classmethod
     def create(cls, definition: Union[DataSetEntity, dict]) -> DataSetEntity:
-        result = GsSession.current._post('/data/datasets', payload=definition)
+        result = cls.get_session()._post('/data/datasets', payload=definition)
         return result
 
     @classmethod
     def delete_dataset(cls, dataset_id: str) -> dict:
-        result = GsSession.current._delete(f'/data/datasets/{dataset_id}')
+        result = cls.get_session()._delete(f'/data/datasets/{dataset_id}')
         return result
 
     @classmethod
     def undelete_dataset(cls, dataset_id: str) -> dict:
-        result = GsSession.current._put(f'/data/datasets/{dataset_id}/undelete')
+        result = cls.get_session()._put(f'/data/datasets/{dataset_id}/undelete')
         return result
 
     @classmethod
     def update_definition(cls, dataset_id: str, definition: Union[DataSetEntity, dict]) -> DataSetEntity:
-        result = GsSession.current._put('/data/datasets/{}'.format(dataset_id), payload=definition, cls=DataSetEntity)
+        result = cls.get_session()._put('/data/datasets/{}'.format(dataset_id), payload=definition, cls=DataSetEntity)
         return result
 
     @classmethod
@@ -301,8 +357,9 @@ class GsDataApi(DataApi):
             #  https://pandas.pydata.org/docs/reference/api/pandas.DataFrame.to_json.html
             data = data.to_json(orient='records')
         # Don't use msgpack for MDS
-        headers = None if 'us-east' in GsSession.current.domain else {'Content-Type': 'application/x-msgpack'}
-        result = GsSession.current._post('/data/{}'.format(dataset_id), payload=data, request_headers=headers)
+        session = cls.get_session()
+        headers = None if 'us-east' in session.domain else {'Content-Type': 'application/x-msgpack'}
+        result = session._post('/data/{}'.format(dataset_id), payload=data, request_headers=headers)
         return result
 
     @classmethod
@@ -311,13 +368,13 @@ class GsDataApi(DataApi):
         Delete data from dataset. You must have admin access to the dataset to delete data.
         All data deleted is not recoverable.
         """
-        return GsSession.current._delete(f'/data/{dataset_id}', payload=delete_query, use_body=True)
+        return cls.get_session()._delete(f'/data/{dataset_id}', payload=delete_query, use_body=True)
 
     @classmethod
     def get_definition(cls, dataset_id: str) -> DataSetEntity:
         definition = cls.__definitions.get(dataset_id)
         if not definition:
-            definition = GsSession.current._get('/data/datasets/{}'.format(dataset_id), cls=DataSetEntity)
+            definition = cls.get_session()._get('/data/datasets/{}'.format(dataset_id), cls=DataSetEntity)
             if not definition:
                 raise MqValueError('Unknown dataset {}'.format(dataset_id))
 
@@ -337,13 +394,13 @@ class GsDataApi(DataApi):
                              dict(limit=limit, offset=offset, scroll=scroll, scrollId=scroll_id,
                                   enablePagination='true').items()))
 
-        body = GsSession.current._get('/data/datasets', payload=params, cls=DataSetEntity)
+        body = cls.get_session()._get('/data/datasets', payload=params, cls=DataSetEntity)
         results = scroll_results = body['results']
         total_results = body['totalResults']
 
         while len(scroll_results) and len(results) < total_results:
             params['scrollId'] = body['scrollId']
-            body = GsSession.current._get('/data/datasets', payload=params, cls=DataSetEntity)
+            body = cls.get_session()._get('/data/datasets', payload=params, cls=DataSetEntity)
             scroll_results = body['results']
             results = results + scroll_results
 
@@ -359,20 +416,21 @@ class GsDataApi(DataApi):
                     ) -> Tuple[DataSetCatalogEntry]:
 
         query = f'dataSetId={"&dataSetId=".join(dataset_ids)}' if dataset_ids else ''
+        gs_session = cls.get_session()
         if len(query):
-            return GsSession.current._get(f'/data/catalog?{query}', cls=DataSetCatalogEntry)['results']
+            return gs_session._get(f'/data/catalog?{query}', cls=DataSetCatalogEntry)['results']
         else:
             params = dict(filter(lambda item: item[1] is not None,
                                  dict(limit=limit, offset=offset, scroll=scroll, scrollId=scroll_id,
                                       enablePagination='true').items()))
 
-            body = GsSession.current._get('/data/catalog', payload=params, cls=DataSetEntity)
+            body = gs_session._get('/data/catalog', payload=params, cls=DataSetEntity)
             results = scroll_results = body['results']
             total_results = body['totalResults']
 
             while len(scroll_results) and len(results) < total_results:
                 params['scrollId'] = body['scrollId']
-                body = GsSession.current._get('/data/catalog', payload=params, cls=DataSetEntity)
+                body = gs_session._get('/data/catalog', payload=params, cls=DataSetEntity)
                 scroll_results = body['results']
                 results = results + scroll_results
 
@@ -402,7 +460,7 @@ class GsDataApi(DataApi):
             where=where,
             limit=limit
         )
-        results = GsSession.current._post('/data/mdapi/query', query)['results']
+        results = cls._post_with_cache_check('/data/mdapi/query', payload=query)['results']
 
         if return_type is str:
             return tuple(coordinate['name'] for coordinate in results)
@@ -418,12 +476,208 @@ class GsDataApi(DataApi):
         else:
             raise NotImplementedError('Unsupported return type')
 
+    @classmethod
+    def _to_zulu(cls, d):
+        return d.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    @classmethod
+    def _resolve_default_csa_for_builder(cls, builder):
+        dict_builder = builder.to_dict()
+        properties = dict_builder.get('properties')
+
+        if not properties:
+            return 'USD-1'
+
+        clearing_house = properties.get('clearinghouse')
+
+        if 'payccy' in properties:
+            pay_ccy = properties['payccy']
+            if pay_ccy == 'USD':
+                default_csa = 'USD-SOFR'
+            elif pay_ccy == 'EUR':
+                default_csa = 'EUR-EUROSTR'
+            else:
+                default_csa = pay_ccy + "-1"
+
+            if clearing_house and clearing_house != 'LCH':
+                default_csa = f'CB LCH/{clearing_house.upper()} {default_csa}'
+
+            return default_csa
+        else:
+            return "USD-1"
+
+    @classmethod
+    def get_mxapi_curve_measure(cls, curve_type=None, curve_asset=None, curve_point=None, curve_tags=None,
+                                measure=None, start_time=None, end_time=None, request_id=None,
+                                close_location=None, real_time=None) -> pd.DataFrame:
+        real_time = real_time or isinstance(start_time, dt.datetime)
+
+        if not start_time:
+            if real_time:
+                start_time = DataContext.current.start_time
+            else:
+                start_time = DataContext.current.start_date
+
+        if not end_time:
+            if real_time:
+                end_time = DataContext.current.end_time
+            else:
+                end_time = DataContext.current.end_date
+
+        if not real_time and not close_location:
+            close_location = 'NYC'
+
+        if real_time and not isinstance(end_time, dt.date):
+            raise ValueError("Start and end need to be either both date or both time")
+
+        if real_time:
+            request_dict = {
+                'type': 'MxAPI Measure Request',
+                'modelType': curve_type,
+                'modelAsset': curve_asset,
+                'point': curve_point,
+                'tags': curve_tags,
+                'startTime': cls._to_zulu(start_time),
+                'endTime': cls._to_zulu(end_time),
+                'measureName': measure
+            }
+        else:
+            request_dict = {
+                'type': 'MxAPI Measure Request EOD',
+                'modelType': curve_type,
+                'modelAsset': curve_asset,
+                'point': curve_point,
+                'tags': curve_tags,
+                'startDate': start_time.isoformat(),
+                'endDate': end_time.isoformat(),
+                'close': close_location,
+                'measureName': measure
+            }
+
+        url = '/mxapi/mq/measure' if real_time else '/mxapi/mq/measure/eod'
+
+        start = time.perf_counter()
+        try:
+            body = cls._post_with_cache_check(url, payload=request_dict)
+        except Exception as e:
+            log_warning(request_id, _logger, f'Mxapi measure query {request_dict} failed due to {e}')
+            raise e
+        log_debug(request_id, _logger, 'MxAPI measure query (%s) with payload (%s) ran in %.3f ms',
+                  body.get('requestId'), request_dict, (time.perf_counter() - start) * 1000)
+
+        if real_time:
+            values = body['measures']
+            valuation_times = body['measureTimes']
+            timestamps = [parser.parse(s) for s in valuation_times]
+            column_name = body['measureName']
+
+            d = {column_name: values, 'timeStamp': timestamps}
+            df = MarketDataResponseFrame(pd.DataFrame(data=d))
+            df = df.set_index('timeStamp')
+            return df
+        else:
+            values = body['measures']
+            valuation_date_strings = body['measureDates']
+            valuation_dates = [dt.date.fromisoformat(s) for s in valuation_date_strings]
+            column_name = body['measureName']
+
+            d = {column_name: values, 'date': valuation_dates}
+            df = MarketDataResponseFrame(pd.DataFrame(data=d))
+            df = df.set_index('date')
+            return df
+
+    @classmethod
+    def get_mxapi_backtest_data(cls, builder, start_time=None, end_time=None, num_samples=120,
+                                csa=None, request_id=None, close_location=None, real_time=None) -> pd.DataFrame:
+        real_time = real_time or isinstance(start_time, dt.datetime)
+
+        if not start_time:
+            if real_time:
+                start_time = DataContext.current.start_time
+            else:
+                start_time = DataContext.current.start_date
+
+        if not end_time:
+            if real_time:
+                end_time = DataContext.current.end_time
+            else:
+                end_time = DataContext.current.end_date
+
+        if not csa:
+            csa = cls._resolve_default_csa_for_builder(builder)
+
+        if not real_time and not close_location:
+            close_location = 'NYC'
+
+        if real_time and not isinstance(end_time, dt.date):
+            raise ValueError("Start and end need to be either both date or both time")
+
+        leg = builder.resolve(in_place=False)
+        leg_dict_string = json.dumps(leg, cls=JSONEncoder)
+        leg_dict = json.loads(leg_dict_string)
+
+        if real_time:
+            request_dict = {
+                'type': 'MxAPI Backtest Request MQ',
+                'builder': leg_dict,
+                'startTime': cls._to_zulu(start_time),
+                'endTime': cls._to_zulu(end_time),
+                'sampleSize': num_samples,
+                'csa': csa
+            }
+        else:
+            request_dict = {
+                'type': 'MxAPI Backtest Request MQEOD',
+                'builder': leg_dict,
+                'startDate': start_time.isoformat(),
+                'endDate': end_time.isoformat(),
+                'sampleSize': num_samples,
+                'csa': csa,
+                'close': close_location
+            }
+
+        url = '/mxapi/mq/backtest' if real_time else '/mxapi/mq/backtest/eod'
+
+        start = time.perf_counter()
+        try:
+            body = cls._post_with_cache_check(url, payload=request_dict)
+        except Exception as e:
+            log_warning(request_id, _logger, f'Mxapi backtest query {request_dict} failed due to {e}')
+            raise e
+        log_debug(request_id, _logger, 'MxAPI backtest query (%s) with payload (%s) ran in %.3f ms',
+                  body.get('requestId'), request_dict, (time.perf_counter() - start) * 1000)
+
+        if real_time:
+            values = body['valuations']
+            valuation_times = body['valuationTimes']
+            timestamps = [parser.parse(s) for s in valuation_times]
+            column_name = body['valuationName']
+
+            d = {column_name: values, 'timeStamp': timestamps}
+            df = MarketDataResponseFrame(pd.DataFrame(data=d))
+            df = df.set_index('timeStamp')
+            return df
+        else:
+            values = body['valuations']
+            valuation_date_strings = body['valuationDates']
+            valuation_dates = [dt.date.fromisoformat(s) for s in valuation_date_strings]
+            column_name = body['valuationName']
+
+            d = {column_name: values, 'date': valuation_dates}
+            df = MarketDataResponseFrame(pd.DataFrame(data=d))
+            df = df.set_index('date')
+            return df
+
     @staticmethod
-    def build_market_data_query(asset_ids: List[str], query_type: QueryType, where: Union[FieldFilterMap, Dict] = None,
-                                source: Union[str] = None, real_time: bool = False, measure='Curve'):
+    def _get_market_data_filters(asset_ids: List[str],
+                                 query_type: Union[QueryType, str],
+                                 where: Union[FieldFilterMap, Dict] = None,
+                                 source: Union[str] = None,
+                                 real_time: bool = False,
+                                 measure='Curve'):
         inner = {
             'entityIds': asset_ids,
-            'queryType': query_type.value,
+            'queryType': query_type.value if isinstance(query_type, QueryType) else query_type,
             'where': where or {},
             'source': source or 'any',
             'frequency': 'Real Time' if real_time else 'End Of Day',
@@ -431,6 +685,56 @@ class GsDataApi(DataApi):
                 measure
             ]
         }
+        return inner
+
+    @staticmethod
+    def build_interval_chunked_market_data_queries(asset_ids: List[str],
+                                                   query_type: Union[QueryType, str],
+                                                   where: Union[FieldFilterMap, Dict] = None,
+                                                   source: Union[str] = None,
+                                                   real_time: bool = False,
+                                                   measure='Curve',
+                                                   parallel_pool_size: int = 1) -> List[dict]:
+        def chunk_time(start, end, pool_size) -> tuple:
+            chunk_duration = (end - start) / pool_size
+            current = start
+            for _ in range(pool_size):
+                next_end = current + chunk_duration
+                yield current, next_end
+                current = next_end
+
+        queries = []
+        if real_time:
+            start, end = DataContext.current.start_time, DataContext.current.end_time
+            start_key, end_key = 'startTime', 'endTime'
+        else:
+            start, end = DataContext.current.start_date, DataContext.current.end_date
+            start_key, end_key = 'startDate', 'endDate'
+
+        for s, e in chunk_time(start, end, parallel_pool_size):
+            inner = copy(GsDataApi._get_market_data_filters(asset_ids, query_type, where, source, real_time, measure))
+            inner[start_key], inner[end_key] = s, e
+            queries.append({
+                'queries': [inner]
+            })
+
+        log_debug("", _logger, f"Created {len(queries)} market data queries. Pool size = {parallel_pool_size}")
+
+        return queries
+
+    @staticmethod
+    def build_market_data_query(asset_ids: List[str],
+                                query_type: Union[QueryType, str],
+                                where: Union[FieldFilterMap, Dict] = None,
+                                source: Union[str] = None,
+                                real_time: bool = False,
+                                measure='Curve',
+                                parallel_pool_size: int = 1) -> Union[dict, List[dict]]:
+        if parallel_pool_size > 1:
+            return GsDataApi.build_interval_chunked_market_data_queries(asset_ids, query_type, where, source, real_time,
+                                                                        measure, parallel_pool_size)
+
+        inner = GsDataApi._get_market_data_filters(asset_ids, query_type, where, source, real_time, measure)
         if DataContext.current.interval is not None:
             inner['interval'] = DataContext.current.interval
         if real_time:
@@ -458,7 +762,7 @@ class GsDataApi(DataApi):
         Return a dictionary containing a set of dataset providers for each available data field.
         For each field will return a dict of daily and real-time dataset providers where available.
         """
-        response = availability if availability else GsSession.current._get(f'/data/measures/{entity_id}/availability')
+        response = availability if availability else cls.get_session()._get(f'/data/measures/{entity_id}/availability')
         if 'errorMessages' in response:
             raise MqValueError(f"Data availability request {response['requestId']} "
                                f"failed: {response.get('errorMessages', '')}")
@@ -485,16 +789,15 @@ class GsDataApi(DataApi):
         return providers
 
     @classmethod
-    def get_market_data(cls, query, request_id=None) -> pd.DataFrame:
-        GsSession.current: GsSession
+    def get_market_data(cls, query, request_id=None, ignore_errors: bool = False) -> pd.DataFrame:
         start = time.perf_counter()
         try:
-            body = GsSession.current._post('/data/measures', payload=query)
+            body = cls._post_with_cache_check('/data/measures', payload=query)
         except Exception as e:
             log_warning(request_id, _logger, f'Market data query {query} failed due to {e}')
             raise e
-        log_debug(request_id, _logger, 'market data query (%s) ran in %.3f ms', body.get('requestId'),
-                  (time.perf_counter() - start) * 1000)
+        log_debug(request_id, _logger, 'market data query (%s) with payload (%s) ran in %.3f ms', body.get('requestId'),
+                  query, (time.perf_counter() - start) * 1000)
 
         ids = []
         parts = []
@@ -502,7 +805,11 @@ class GsDataApi(DataApi):
             container = e['queryResponse'][0]
             ids.extend(container.get('dataSetIds', ()))
             if 'errorMessages' in container:
-                raise MqValueError(f"measure service request {body['requestId']} failed: {container['errorMessages']}")
+                msg = f'measure service request {body["requestId"]} failed: {container["errorMessages"]}'
+                if ignore_errors:
+                    log_warning(request_id, _logger, msg)
+                else:
+                    raise MqValueError(msg)
             if 'response' in container:
                 df = MarketDataResponseFrame(container['response']['data'])
                 df.set_index('date' if 'date' in df.columns else 'time', inplace=True)
@@ -741,10 +1048,10 @@ class GsDataApi(DataApi):
         else:
             return ret
 
-    @staticmethod
+    @classmethod
     @cachetools.cached(TTLCache(ttl=3600, maxsize=128))
-    def get_types(dataset_id: str):
-        results = GsSession.current._get(f'/data/catalog/{dataset_id}')
+    def get_types(cls, dataset_id: str):
+        results = cls.get_session()._get(f'/data/catalog/{dataset_id}')
         fields = results.get("fields")
         if fields:
             field_types = {}
@@ -756,24 +1063,52 @@ class GsDataApi(DataApi):
         raise RuntimeError(f"Unable to get Dataset schema for {dataset_id}")
 
     @classmethod
-    def construct_dataframe_with_types(cls, dataset_id: str, data: Union[Base, List, Tuple]) -> pd.DataFrame:
+    def get_field_types(cls, field_names: Union[str, List[str]]):
+        try:
+            fields = cls.get_dataset_fields(names=field_names, limit=len(field_names))
+        except Exception:
+            return {}
+        if fields:
+            field_types = {}
+            field: DataSetFieldEntity
+            for field in fields:
+                field_name = field.name
+                field_type = field.type_
+                field_format = field.parameters.get('format')
+                field_types[field_name] = field_format or field_type
+            return field_types
+        return {}
+
+    @classmethod
+    def construct_dataframe_with_types(cls, dataset_id: str, data: Union[Base, List, Tuple],
+                                       schema_varies=False, standard_fields=False) -> pd.DataFrame:
         """
         Constructs a dataframe with correct date types.
         :param dataset_id: id of the dataset
         :param data: data to convert with correct types
+        :param schema_varies: if set, method will not assume that all rows have the same columns
+        :param standard_fields: if set, will use fields api instead of catalog api to get fieldTypes
         :return: dataframe with correct types
         """
         if len(data):
-            dataset_types = cls.get_types(dataset_id)
             # Use first row to infer fields from data
-            incoming_data_data_types = pd.DataFrame([data[0]]).dtypes.to_dict()
+            sample = data if schema_varies else [data[0]]
+            incoming_data_data_types = pd.DataFrame(sample).dtypes.to_dict()
+            dataset_types = cls.get_types(dataset_id) if not standard_fields \
+                else cls.get_field_types(field_names=list(incoming_data_data_types.keys()))
+
+            # fallback approach in case fields api doesn't return results
+            if dataset_types is {} and standard_fields:
+                dataset_types = cls.get_types(dataset_id)
 
             df = pd.DataFrame(data, columns={**dataset_types, **incoming_data_data_types})
 
             for field_name, type_name in dataset_types.items():
                 if df.get(field_name) is not None and type_name in ('date', 'date-time') and \
                         len(df.get(field_name).value_counts()) > 0:
-                    df = df.astype({field_name: np.datetime64})
+                    df[field_name] = pd.to_datetime(df[field_name],
+                                                    format='ISO8601' if int(
+                                                        pd.__version__.split('.')[0]) == 2 else None)
 
             field_names = dataset_types.keys()
 
@@ -808,7 +1143,7 @@ class GsDataApi(DataApi):
         """
 
         where = dict(filter(lambda item: item[1] is not None, dict(id=ids, name=names).items()))
-        response = GsSession.current._post('/data/fields/query',
+        response = cls.get_session()._post('/data/fields/query',
                                            payload={'where': where, 'limit': limit},
                                            cls=DataSetFieldEntity)
         return response['results']
@@ -836,7 +1171,7 @@ class GsDataApi(DataApi):
         >>> GsDataApi.create_dataset_fields(fields)
         """
         params = {'fields': fields}
-        response = GsSession.current._post('/data/fields/bulk', payload=params, cls=DataSetFieldEntity)
+        response = cls.get_session()._post('/data/fields/bulk', payload=params, cls=DataSetFieldEntity)
         return response['results']
 
     @classmethod
@@ -864,7 +1199,7 @@ class GsDataApi(DataApi):
         >>> GsDataApi.update_dataset_fields(fields)
         """
         params = {'fields': fields}
-        response = GsSession.current._put('/data/fields/bulk', payload=params, cls=DataSetFieldEntity)
+        response = cls.get_session()._put('/data/fields/bulk', payload=params, cls=DataSetFieldEntity)
         return response['results']
 
 

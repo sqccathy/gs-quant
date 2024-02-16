@@ -19,31 +19,26 @@ import cachetools.func
 import inflection
 import numpy as np
 from dateutil import tz
-from pandas import Series, DatetimeIndex
-from pandas.tseries.holiday import Holiday, AbstractHolidayCalendar, USMemorialDay, USLaborDay, USThanksgivingDay, \
+from pandas import DatetimeIndex, Series
+from pandas.tseries.holiday import AbstractHolidayCalendar, Holiday, USLaborDay, USMemorialDay, USThanksgivingDay, \
     sunday_to_monday
 from pydash import chunk, flatten
 
-from gs_quant.api.gs.data import MarketDataResponseFrame
-from gs_quant.api.gs.data import QueryType
+from gs_quant.api.gs.data import MarketDataResponseFrame, QueryType
 from gs_quant.api.gs.indices import GsIndexApi
 from gs_quant.data.core import DataContext
 from gs_quant.data.fields import Fields
 from gs_quant.data.log import log_debug, log_warning
+from gs_quant.datetime import DAYS_IN_YEAR
 from gs_quant.datetime.gscalendar import GsCalendar
 from gs_quant.datetime.point import relative_date_add
 from gs_quant.markets.securities import *
-from gs_quant.markets.securities import Asset, AssetIdentifier, SecurityMaster, AssetType as SecAssetType
+from gs_quant.markets.securities import Asset, AssetIdentifier, AssetType as SecAssetType, SecurityMaster
 from gs_quant.target.common import AssetClass, AssetType
-from gs_quant.timeseries import volatility, Window, Returns, sqrt, Basket, RelativeDate
-from gs_quant.timeseries.helper import (
-    log_return,
-    plot_measure,
-    _to_offset,
-    check_forward_looking,
-    get_df_with_retries,
-    get_dataset_data_with_retries, _tenor_to_month, _month_to_tenor, _split_where_conditions
-)
+from gs_quant.timeseries import Basket, RelativeDate, Returns, Window, sqrt, volatility
+from gs_quant.timeseries.helper import (_month_to_tenor, _split_where_conditions, _tenor_to_month, _to_offset,
+                                        check_forward_looking, get_dataset_data_with_retries, get_df_with_retries,
+                                        log_return, plot_measure)
 from gs_quant.timeseries.measures_helper import EdrDataReference, VolReference, preprocess_implied_vol_strikes_eq
 
 GENERIC_DATE = Union[datetime.date, str]
@@ -271,7 +266,8 @@ CURRENCY_TO_OIS_RATE_BENCHMARK = {
     'CAD': 'CAD OIS',
     'NOK': 'NOK OIS',
     'NZD': 'NZD OIS',
-    'SEK': 'SEK OIS'
+    'SEK': 'SEK OIS',
+    'CHF': 'CHF OIS'
 }
 
 CURRENCY_TO_DEFAULT_RATE_BENCHMARK = {
@@ -459,9 +455,9 @@ def _range_from_pricing_date(exchange, pricing_date: Optional[GENERIC_DATE] = No
     return start, end
 
 
-def _market_data_timed(q, request_id=None):
+def _market_data_timed(q, request_id=None, ignore_errors: bool = False):
     args = [q, request_id] if request_id else [q]
-    return GsDataApi.get_market_data(*args)
+    return GsDataApi.get_market_data(*args, ignore_errors=ignore_errors)
 
 
 def _extract_series_from_df(df: pd.DataFrame, query_type: QueryType, handle_missing_column=False):
@@ -803,8 +799,8 @@ def cds_spread(asset: Asset, spread: int, *, source: str = None, real_time: bool
                                  query_type=QueryType.IMPLIED_VOLATILITY)],
               asset_type_excluded=(AssetType.CommodityNaturalGasHub,))
 def implied_volatility(asset: Asset, tenor: str, strike_reference: VolReference = None,
-                       relative_strike: Real = None, *, source: str = None, real_time: bool = False,
-                       request_id: Optional[str] = None) -> Series:
+                       relative_strike: Real = None, parallel_pool_size: int = 1, *, source: str = None,
+                       real_time: bool = False, request_id: Optional[str] = None) -> Series:
     """
     Volatility of an asset implied by observations of market prices.
 
@@ -813,6 +809,8 @@ def implied_volatility(asset: Asset, tenor: str, strike_reference: VolReference 
             or absolute calendar strips e.g. 'Cal20', 'F20-G20'
     :param strike_reference: reference for strike level
     :param relative_strike: strike relative to reference
+    :param parallel_pool_size: chunk time range into 'parallel_pool_size' intervals
+    to execute parallel queries
     :param source: name of function caller
     :param real_time: whether to retrieve intraday data instead of EOD
     :param request_id: service request id, if any
@@ -837,7 +835,8 @@ def implied_volatility(asset: Asset, tenor: str, strike_reference: VolReference 
     where = dict(tenor=tenor, strikeReference=ref_string, relativeStrike=relative_strike)
     # Parallel calls when fetching / appending last results
     df = get_historical_and_last_for_measure([asset_id], QueryType.IMPLIED_VOLATILITY, where, source=source,
-                                             real_time=real_time, request_id=request_id)
+                                             real_time=real_time, request_id=request_id,
+                                             parallel_pool_size=parallel_pool_size)
 
     s = _extract_series_from_df(df, QueryType.IMPLIED_VOLATILITY)
     return s
@@ -934,8 +933,9 @@ def _check_top_n(top_n):
 
 @plot_measure((AssetClass.Equity,), (AssetType.Index, AssetType.ETF,), [QueryType.IMPLIED_CORRELATION])
 def implied_correlation(asset: Asset, tenor: str, strike_reference: EdrDataReference, relative_strike: Real,
-                        top_n_of_index: Optional[int] = None, composition_date: Optional[GENERIC_DATE] = None, *,
-                        source: str = None, real_time: bool = False, request_id: Optional[str] = None) -> Series:
+                        top_n_of_index: Optional[int] = None, composition_date: Optional[GENERIC_DATE] = None,
+                        *, source: str = None, real_time: bool = False,
+                        request_id: Optional[str] = None) -> Series:
     """
     Correlation of an asset implied by observations of market prices.
 
@@ -1136,7 +1136,8 @@ def realized_correlation_with_basket(asset: Asset, tenor: str, basket: Basket, *
 @plot_measure((AssetClass.Equity,), (AssetType.Index, AssetType.ETF,), [QueryType.AVERAGE_IMPLIED_VOLATILITY,
                                                                         QueryType.IMPLIED_VOLATILITY])
 def average_implied_volatility(asset: Asset, tenor: str, strike_reference: EdrDataReference, relative_strike: Real,
-                               top_n_of_index: Optional[int] = None, composition_date: Optional[GENERIC_DATE] = None, *,
+                               top_n_of_index: Optional[int] = None, composition_date: Optional[GENERIC_DATE] = None,
+                               weight_threshold: Optional[Real] = None, *,
                                source: str = None, real_time: bool = False, request_id: Optional[str] = None) -> Series:
     """
     Historical weighted average implied volatility of the top constituents of an equity index. If top_n_of_index and
@@ -1151,6 +1152,8 @@ def average_implied_volatility(asset: Asset, tenor: str, strike_reference: EdrDa
     :param top_n_of_index: the number of top constituents to take into account
     :param composition_date: YYYY-MM-DD or relative days before today e.g. 1d, 1m, 1y; defaults to the most recent date
         available
+    :param weight_threshold threshold of total constituent weights to drop if data is missing and top_n_of_index is
+        passed in
     :param source: name of function caller
     :param real_time: whether to retrieve intraday data instead of EOD
     :param request_id: service request id, if any
@@ -1172,14 +1175,38 @@ def average_implied_volatility(asset: Asset, tenor: str, strike_reference: EdrDa
 
         ref_string, relative_strike = preprocess_implied_vol_strikes_eq(VolReference(strike_reference.value),
                                                                         relative_strike)
-
+        tenor = _tenor_month_to_year(tenor)
         log_debug(request_id, _logger, 'where tenor=%s, strikeReference=%s, relativeStrike=%s', tenor, ref_string,
                   relative_strike)
         where = dict(tenor=tenor, strikeReference=ref_string, relativeStrike=relative_strike)
 
         asset_ids = constituents.index.to_list()
         df = get_historical_and_last_for_measure(asset_ids=asset_ids, query_type=QueryType.IMPLIED_VOLATILITY,
-                                                 where=where, source=source, real_time=real_time, request_id=request_id)
+                                                 where=where, source=source, real_time=real_time, request_id=request_id,
+                                                 ignore_errors=True)
+
+        if not df.empty:
+            asset_to_weight = constituents['netWeight'].to_dict()
+            missing_assets = set(asset_ids).difference(set(df['assetId'].unique()))
+            if len(missing_assets) and not weight_threshold:
+                msg = ''
+                for asset in missing_assets:
+                    msg += f'{asset} ({asset_to_weight[asset]:.2f})'
+                raise MqValueError(
+                    f'Unable to calculate average_implied_volatility due to missing implied vols for assets {msg}. '
+                    f'Try adding a weight_threshold to skip these assets.')
+
+            if weight_threshold:
+                total_missing_weight = sum(asset_to_weight[missing_asset] for missing_asset in missing_assets)
+                if total_missing_weight > weight_threshold:
+                    msg = ''
+                    for asset in missing_assets:
+                        msg += f'{asset} ({asset_to_weight[asset]:.2f})'
+                    raise MqValueError(
+                        f'Unable to calculate average_implied_volatility due to missing implied vols for assets {msg}. '
+                        f'Try increasing the weight_threshold to skip these assets.')
+
+                constituents.drop(index=list(missing_assets))
 
         def calculate_avg_vol(group, weights):
             assets, vols = group['assetId'], group['impliedVolatility']
@@ -1283,13 +1310,11 @@ def average_realized_volatility(asset: Asset, tenor: str, returns_type: Returns 
         raise MqValueError('Specify top_n_of_index to get the average realized volatility of top constituents')
 
     if top_n_of_index is None and returns_type is not Returns.LOGARITHMIC:
-        raise NotImplementedError('top_n_of_index argument must be specified when using returns type {}'
-                                  .format(returns_type))
+        raise MqValueError(f'top_n_of_index argument must be specified when using returns type {returns_type.value}')
 
     _check_top_n(top_n_of_index)
     if top_n_of_index is not None and top_n_of_index > 200:
-        raise NotImplementedError('Maximum number of constituents exceeded. Do not use top_n_of_index to calculate on '
-                                  'the full list')
+        raise MqValueError('Maximum number of 200 constituents exceeded')
 
     if top_n_of_index is not None:
         constituents = _get_index_constituent_weights(asset, top_n_of_index, composition_date)
@@ -1687,25 +1712,27 @@ def forward_vol(asset: Asset, tenor: str, forward_start_date: str, strike_refere
     return series
 
 
-def _process_forward_vol_term(asset: Asset, df: pd.DataFrame, name: str) -> pd.Series:
-    if df.empty:
-        return pd.Series(dtype='float64')
+def _process_forward_vol_term(asset: Asset, vol_series: pd.Series, vol_col: str, series_name: str) -> pd.Series:
+    if vol_series.empty:
+        return ExtendedSeries(dtype=float, name=series_name)
     else:
-        latest = df.index.max()
-        _logger.info('selected pricing date %s', latest)
-        df = df.loc[latest]
-
-        tenors = [t for t in df[Fields.TENOR.value].values if re.fullmatch('([1-9]\\d*)([my])', t)]
-        df = pd.DataFrame(df[df['tenor'].isin(tenors)])
         cbd = _get_custom_bd(asset.exchange)
-        df = df.assign(expirationDate=df.index + df['tenor'].map(_to_offset) + cbd - cbd)
-        df = df.set_index('expirationDate')
-        df.sort_index(inplace=True)
-
-        df = df.assign(tenorInMonth=df['tenor'].map(_tenor_to_month))
-        series = sqrt((df['tenorInMonth'] * df[name] ** 2 - df['tenorInMonth'].shift(1) * df[name].shift(1) ** 2) /
-                      (df['tenorInMonth'] - df['tenorInMonth'].shift(1)))
-        return series.loc[DataContext.current.start_date: DataContext.current.end_date]
+        vol_df = pd.DataFrame(vol_series)
+        latest = vol_series.attrs['latest'].date() if isinstance(vol_series.attrs['latest'],
+                                                                 pd.Timestamp) else vol_series.attrs['latest']
+        vol_df['calTimeToExp'] = vol_df.apply(lambda row: (row.name.date() - latest).days / DAYS_IN_YEAR, axis=1)
+        vol_df['timeToExp'] = vol_df.apply(lambda row: np.busday_count(latest, row.name.date(), weekmask=cbd.weekmask,
+                                                                       holidays=cbd.holidays) / 252, axis=1)
+        vol_df['multiplier'] = sqrt(vol_df['calTimeToExp'] / vol_df['timeToExp'])
+        vol_df['fwdVol'] = sqrt(
+            (vol_df['timeToExp'] * (vol_df[vol_col] * vol_df['multiplier']) ** 2 -
+             vol_df['timeToExp'].shift(1) * (vol_df[vol_col].shift(1) * vol_df['multiplier'].shift(1)) ** 2) /
+            (vol_df['timeToExp'] - vol_df['timeToExp'].shift(1)))
+        ext_series = ExtendedSeries(vol_df['fwdVol'], name=series_name)[DataContext.current.start_date:
+                                                                        DataContext.current.end_date]
+        ext_series.dataset_ids = getattr(vol_series, 'dataset_ids', ())
+        ext_series.sort_index(inplace=True)
+        return ext_series
 
 
 @plot_measure((AssetClass.Equity, AssetClass.FX), None, [QueryType.IMPLIED_VOLATILITY])
@@ -1724,31 +1751,9 @@ def forward_vol_term(asset: Asset, strike_reference: VolReference, relative_stri
     :param request_id: service request id, if any
     :return: forward volatility term structure
     """
-    if real_time:
-        raise NotImplementedError('real-time forward vol term not implemented')
-
-    check_forward_looking(pricing_date, source, 'forward_vol_term')
-    if asset.asset_class == AssetClass.FX:
-        sr_string, relative_strike = _preprocess_implied_vol_strikes_fx(strike_reference, relative_strike)
-        asset_id = cross_stored_direction_for_fx_vol(asset)
-        buffer = 1  # FX vol data is loaded later
-    else:
-        sr_string, relative_strike = preprocess_implied_vol_strikes_eq(strike_reference, relative_strike)
-        asset_id = asset.get_marquee_id()
-        buffer = 0
-
-    start, end = _range_from_pricing_date(asset.exchange, pricing_date, buffer=buffer)
-    with DataContext(start, end):
-        _logger.debug('where strikeReference=%s, relativeStrike=%s', sr_string, relative_strike)
-        where = dict(strikeReference=sr_string, relativeStrike=relative_strike)
-        q = GsDataApi.build_market_data_query([asset_id], QueryType.IMPLIED_VOLATILITY, where=where, source=source,
-                                              real_time=real_time)
-        log_debug(request_id, _logger, 'q %s', q)
-        df = _market_data_timed(q, request_id)
-
-    series = _process_forward_vol_term(asset, df, "impliedVolatility")
-    series = ExtendedSeries(series, name='forwardVolTerm')
-    series.dataset_ids = getattr(df, 'dataset_ids', ())
+    vt = vol_term(asset=asset, strike_reference=strike_reference, relative_strike=relative_strike,
+                  pricing_date=pricing_date, source=source, real_time=real_time, request_id=request_id)
+    series = _process_forward_vol_term(asset, vt, 'impliedVolatility', 'forwardVolTerm')
     return series
 
 
@@ -1788,7 +1793,7 @@ def _get_skew_strikes(asset: Asset, strike_reference: SkewReference, distance: R
     return q_strikes, buffer
 
 
-def _skew(df: MarketDataResponseFrame, relative_strike_col, iv_col, q_strikes, normalization_mode: NormalizationMode)\
+def _skew(df: MarketDataResponseFrame, relative_strike_col, iv_col, q_strikes, normalization_mode: NormalizationMode) \
         -> ExtendedSeries:
     """
     Calculates skew using the data in df and returns it as a series.
@@ -2028,6 +2033,7 @@ def vol_term(asset: Asset, strike_reference: VolReference, relative_strike: Real
     series.sort_index(inplace=True)
     series = series.loc[DataContext.current.start_date: DataContext.current.end_date]
     series = ExtendedSeries(series)
+    series.attrs = dict(latest=latest)
     series.dataset_ids = tuple(dataset_ids)
     return series
 
@@ -2233,7 +2239,9 @@ def carry_term(asset: Asset, pricing_date: Optional[GENERIC_DATE] = None,
     with DataContext(start, end):
         q = GsDataApi.build_market_data_query([asset_id], QueryType.FORWARD_POINT, where={}, source=source,
                                               real_time=real_time)
-        q_spot = GsDataApi.build_market_data_query([asset_id], QueryType.SPOT, where={}, source=source,
+        # setting pricing location as NYC as we have forward points only for NYC close
+        q_spot = GsDataApi.build_market_data_query([asset_id], QueryType.SPOT, where={'pricingLocation': 'NYC'},
+                                                   source=source,
                                                    real_time=real_time)
         data_requests = [partial(_market_data_timed, q, request_id),
                          partial(_market_data_timed, q_spot, request_id)]
@@ -2245,15 +2253,19 @@ def carry_term(asset: Asset, pricing_date: Optional[GENERIC_DATE] = None,
         latest = df.index.max()
         _logger.info('selected pricing date %s', latest)
         df = df.loc[latest]
-        df.loc[:, 'expirationDate'] = df.index + df['tenor'].map(_to_offset) + cbd - cbd
+        df = df.assign(expirationDate=df.index + df['tenor'].map(_to_offset) + cbd - cbd)
+
         df = df.set_index('expirationDate')
         df.sort_index(inplace=True)
         df = df.loc[DataContext.current.start_date: DataContext.current.end_date]
         spot = spot_df.loc[latest]['spot']
-        df[forward_col_name] = df[forward_col_name] / spot
+
         if annualized == FXSpotCarry.ANNUALIZED:
-            df[forward_col_name] = df[forward_col_name] * np.sqrt((df.index.to_series() - latest).dt.days / 252)
-        series = ExtendedSeries(dtype=float) if df.empty else ExtendedSeries(df[forward_col_name])
+            df['carry'] = df[forward_col_name] * np.sqrt((df.index.to_series() - latest).dt.days / 252) / spot
+        else:
+            df['carry'] = df[forward_col_name] / spot
+
+        series = ExtendedSeries(dtype=float) if df.empty else ExtendedSeries(df['carry'])
     series.name = 'carry'
     series.dataset_ids = tuple(dataset_ids)
     return series
@@ -2287,20 +2299,8 @@ def forward_var_term(asset: Asset, pricing_date: Optional[GENERIC_DATE] = None, 
     :param request_id: service request id, if any
     :return: forward variance swap term structure
     """
-    if real_time:
-        raise NotImplementedError('real-time forward var term not implemented')
-
-    check_forward_looking(pricing_date, source, 'forward_var_term')
-    start, end = _range_from_pricing_date(asset.exchange, pricing_date)
-    with DataContext(start, end):
-        q = GsDataApi.build_market_data_query([asset.get_marquee_id()], QueryType.VAR_SWAP, source=source,
-                                              real_time=real_time)
-        log_debug(request_id, _logger, 'q %s', q)
-        df = _market_data_timed(q, request_id)
-
-    series = _process_forward_vol_term(asset, df, Fields.VAR_SWAP.value)
-    series = ExtendedSeries(series, name='forwardVarTerm')
-    series.dataset_ids = getattr(df, 'dataset_ids', ())
+    vt = var_term(asset=asset, pricing_date=pricing_date, source=source, real_time=real_time, request_id=request_id)
+    series = _process_forward_vol_term(asset, vt, Fields.VAR_SWAP.value, 'forwardVarTerm')
     return series
 
 
@@ -2405,6 +2405,7 @@ def var_term(asset: Asset, pricing_date: Optional[str] = None, forward_start_dat
         df.sort_index(inplace=True)
         df = df.loc[DataContext.current.start_date: DataContext.current.end_date]
         series = ExtendedSeries(dtype=float) if df.empty else ExtendedSeries(df[Fields.VAR_SWAP.value])
+        series.attrs = dict(latest=latest)
 
     series.dataset_ids = tuple(dataset_ids)
     return series
@@ -2692,12 +2693,12 @@ def _weighted_average_valuation_curve_for_calendar_strip(asset, contract_range, 
     :return:
     """
     start_date_interval = _string_to_date_interval(contract_range.split("-")[0])
-    if type(start_date_interval) == str:
+    if isinstance(start_date_interval, str):
         raise MqValueError(start_date_interval)
     start_contract_range = start_date_interval['start_date']
     if "-" in contract_range:
         end_date_interval = _string_to_date_interval(contract_range.split("-")[1])
-        if type(end_date_interval) == str:
+        if isinstance(end_date_interval, str):
             raise MqValueError(end_date_interval)
         end_contract_range = end_date_interval['end_date']
     else:
@@ -2761,12 +2762,12 @@ def fair_price(asset: Asset, tenor: str = None, *,
 
 def _get_start_and_end_dates(contract_range: str) -> (int, int):
     start_date_interval = _string_to_date_interval(contract_range.split("-")[0])
-    if type(start_date_interval) == str:
+    if isinstance(start_date_interval, str):
         raise MqValueError(start_date_interval)
     start_contract_range = start_date_interval['start_date']
     if "-" in contract_range:
         end_date_interval = _string_to_date_interval(contract_range.split("-")[1])
-        if type(end_date_interval) == str:
+        if isinstance(end_date_interval, str):
             raise MqValueError(end_date_interval)
         end_contract_range = end_date_interval['end_date']
     else:
@@ -2824,7 +2825,7 @@ def _forward_price_elec(asset: Asset, price_method: str = 'LMP', bucket: str = '
         Us Power Forward Prices
 
         :param asset: asset object loaded from security master
-        :param price_method: price method between LMP, MCP, SPP: Default value = LMP
+        :param price_method: price method between LMP, MCP, SPP, Physical: Default value = LMP
         :param bucket: bucket type among '7x24', 'peak', 'offpeak', '2x16h', '7x16' and '7x8': Default value = 7x24
         :param contract_range: e.g. inputs - 'Cal20', 'F20-G20', '2Q20', '2H20', 'Cal20-Cal21': Default Value = F20
         :param source: name of function caller: default source = None
@@ -2842,11 +2843,19 @@ def _forward_price_elec(asset: Asset, price_method: str = 'LMP', bucket: str = '
 
     where = dict(priceMethod=price_method.upper(), quantityBucket=quantitybuckets_to_query, contract=contracts_to_query)
     with DataContext(start, end):
-        q = GsDataApi.build_market_data_query([asset.get_marquee_id()], QueryType.FORWARD_PRICE,
-                                              where=where, source=None,
-                                              real_time=False)
-        _logger.debug('q %s', q)
-        forwards_data = _market_data_timed(q)
+        def _query_fwd(asset_, where_):
+            q = GsDataApi.build_market_data_query([asset_.get_marquee_id()], QueryType.FORWARD_PRICE,
+                                                  where=where_, source=None,
+                                                  real_time=False)
+            _logger.debug('q %s', q)
+            return _market_data_timed(q)
+
+        forwards_data = _query_fwd(asset, where)
+        if forwards_data.empty:
+            # For cases where uppercase priceMethod dont fetch data, try user input as is
+            where['priceMethod'] = price_method
+            forwards_data = _query_fwd(asset, where)
+
         dataset_ids = getattr(forwards_data, 'dataset_ids', ())
 
     if forwards_data.empty:
@@ -2972,10 +2981,8 @@ def forward_price_ng(asset: Asset, contract_range: str = 'F20', price_method: st
 
 def get_contract_range(start_contract_range, end_contract_range, timezone):
     if timezone:
-        df = pd.date_range(start=start_contract_range,
-                           end=end_contract_range + datetime.timedelta(days=1), freq='H',
-                           closed='left',
-                           tz=timezone).to_frame()
+        df = pd.date_range(start_contract_range, end_contract_range + datetime.timedelta(days=1), None, 'H',
+                           timezone, False, None, 'left').to_frame()
 
         df['hour'] = df.index.hour
         df['day'] = df.index.dayofweek
@@ -3040,10 +3047,18 @@ def bucketize_price(asset: Asset, price_method: str, bucket: str = '7x24',
 
     where = dict(priceMethod=price_method.upper())
     with DataContext(start_time, end_time):
-        q = GsDataApi.build_market_data_query([asset.get_marquee_id()], QueryType.PRICE, where=where, source=source,
-                                              real_time=True)
-        log_debug(request_id, _logger, 'q %s', q)
-        df = _market_data_timed(q, request_id)
+        def _query_prices(asset_, where_):
+            q = GsDataApi.build_market_data_query([asset_.get_marquee_id()], QueryType.PRICE, where=where_,
+                                                  source=source,
+                                                  real_time=True)
+            log_debug(request_id, _logger, 'q %s', q)
+            return _market_data_timed(q, request_id)
+
+        df = _query_prices(asset, where)
+        if df.empty:
+            # For cases where uppercase priceMethod dont fetch data, try user input as is
+            where['priceMethod'] = price_method
+            df = _query_prices(asset, where)
 
     dataset_ids = getattr(df, 'dataset_ids', ())
 
@@ -3066,7 +3081,8 @@ def bucketize_price(asset: Asset, price_method: str, bucket: str = '7x24',
             raise MqValueError('Duplicate data rows probable for this period')
         # checking missing data points
         ref_hour_range = pd.date_range(str(start_date), str(end_date + datetime.timedelta(days=1)),
-                                       freq=str(freq) + "S", tz=timezone, closed='left')
+                                       None, str(freq) + "S", timezone, False, None, 'left')
+
         missing_hours = ref_hour_range[~ref_hour_range.isin(df.index)]
         missing_dates = np.unique(missing_hours.date)
         missing_months = np.unique(np.array(missing_dates, dtype='M8[D]').astype('M8[M]')).astype('str')
@@ -3128,7 +3144,7 @@ def dividend_yield(asset: Asset, period: str, period_direction: FundamentalMetri
     return _extract_series_from_df(df, QueryType.FUNDAMENTAL_METRIC)
 
 
-@plot_measure((AssetClass.Equity, ),
+@plot_measure((AssetClass.Equity,),
               (AssetType.Research_Basket, AssetType.Custom_Basket, AssetType.Equity_Basket,
                AssetType.ETF, AssetType.Index),
               [QueryType.FUNDAMENTAL_METRIC])
@@ -3589,7 +3605,7 @@ def current_constituents_dividend_yield(asset: Asset, period: str, period_direct
     return _fundamentals_md_query(mqid, period, period_direction, metric, source, real_time, request_id)
 
 
-@plot_measure((AssetClass.Equity, ), (AssetType.Research_Basket,), [QueryType.FUNDAMENTAL_METRIC])
+@plot_measure((AssetClass.Equity,), (AssetType.Research_Basket,), [QueryType.FUNDAMENTAL_METRIC])
 def current_constituents_earnings_per_share(asset: Asset, period: str,
                                             period_direction: FundamentalMetricPeriodDirection, *,
                                             source: str = None, real_time: bool = False,
@@ -4228,7 +4244,7 @@ def forward_curve(asset: Asset, bucket: str = 'PEAK', market_date: str = "",
 
     # Validations for date inputs
     start, end = DataContext.current.start_date, DataContext.current.end_date
-    if type(market_date) != str:
+    if not isinstance(market_date, str):
         raise MqTypeError('Market date should be of string data type as \'YYYYMMDD\'')
     # If no date entered by user, assign last weekday or convert entered string format to date object
     if len(market_date) == 0:
@@ -4390,26 +4406,28 @@ def spot_carry(asset: Asset, tenor: str, annualized: FXSpotCarry = FXSpotCarry.D
                      '2y']:
         raise MqValueError('tenor not included in dataset')
     asset_id = cross_stored_direction_for_fx_vol(asset)
-    where = dict(tenor=tenor)
-    q_1 = GsDataApi.build_market_data_query([asset_id], QueryType.FORWARD_POINT, where=where, source=source,
-                                            real_time=real_time)
-    log_debug(request_id, _logger, 'q_1 %s', q_1)
-    df_fwd = _market_data_timed(q_1, request_id)
-
-    q_2 = GsDataApi.build_market_data_query([asset_id], QueryType.SPOT, source=source, real_time=real_time)
-    log_debug(request_id, _logger, 'q %s', q_2)
-    df_spot = _market_data_timed(q_2, request_id)
-
-    if 'm' in tenor:
-        ann_factor = 12 / int(tenor.replace('m', ''))
+    if real_time:
+        start, end = DataContext.current.start_time, DataContext.current.end_time
+        ds = Dataset(Dataset.GS.FXFORWARDPOINTS_INTRADAY)
+        mq_df = ds.get_data(asset_id=asset_id, start=start, end=end, tenor=tenor)
+        if 'm' in tenor:
+            mq_df['ann_factor'] = 12 / int(tenor.replace('m', ''))
+        else:
+            mq_df['ann_factor'] = 1 / int(tenor.replace('y', ''))
     else:
-        ann_factor = 1 / int(tenor.replace('y', ''))
+        start, end = DataContext.current.start_date, DataContext.current.end_date
+        ds = Dataset(Dataset.GS.FXFORWARDPOINTS_PREMIUM)
+        mq_df = ds.get_data(asset_id=asset_id, start=start, end=end, tenor=tenor)
+        mq_df.reset_index(inplace=True)
+        mq_df['ann_factor'] = mq_df.apply(lambda x: 360 / (x.settlementDate - x.date).days, axis=1)
+        mq_df.set_index('date', inplace=True)
 
-    df_carry = df_fwd['forwardPoint'] / df_spot['spot']
     if annualized == FXSpotCarry.ANNUALIZED:
-        df_carry = df_carry * ann_factor
-    series = ExtendedSeries(df_carry, name='spotCarry')
-    series.dataset_ids = getattr(df_fwd, 'dataset_ids', ())
+        mq_df['carry'] = -1 * mq_df['ann_factor'] * mq_df['forwardPoint'] / mq_df['spot']
+    else:
+        mq_df['carry'] = -1 * mq_df['forwardPoint'] / mq_df['spot']
+    series = ExtendedSeries(mq_df['carry'], name='spotCarry')
+    series.dataset_ids = ds.id
     return series
 
 
@@ -4496,7 +4514,7 @@ def fx_implied_correlation(asset: Asset, asset_2: Asset, tenor: str, *, source: 
 
 
 def get_last_for_measure(asset_ids: List[str], query_type, where, *, source: str = None,
-                         request_id: Optional[str] = None):
+                         request_id: Optional[str] = None, ignore_errors: bool = False):
     now = datetime.date.today()
     delta = datetime.timedelta(days=2)
     with DataContext(now - delta, now + delta):
@@ -4505,7 +4523,7 @@ def get_last_for_measure(asset_ids: List[str], query_type, where, *, source: str
     log_debug(request_id, _logger, 'q_l %s', q_l)
 
     try:
-        df_l = _market_data_timed(q_l, request_id)
+        df_l = _market_data_timed(q_l, request_id, ignore_errors=ignore_errors)
     except Exception as e:
         log_warning(request_id, _logger, f'unable to get last of {query_type}', exc_info=e)
     else:
@@ -4542,6 +4560,32 @@ def append_last_for_measure(df: pd.DataFrame, asset_ids: List[str], query_type, 
     return result
 
 
+def get_market_data_tasks(asset_ids: List[str],
+                          query_type,
+                          where: dict,
+                          *,
+                          source: str = None,
+                          real_time: bool = False,
+                          request_id: Optional[str] = None,
+                          chunk_size: int = 5,
+                          ignore_errors: bool = False,
+                          parallel_pool_size: int = 1) -> list:
+    tasks = []
+    for i, chunked_assets in enumerate(chunk(asset_ids, chunk_size)):
+        queries = GsDataApi.build_market_data_query(
+            chunked_assets,
+            query_type,
+            where=where,
+            source=source,
+            real_time=real_time,
+            parallel_pool_size=parallel_pool_size)
+
+        queries = [queries] if not isinstance(queries, list) else queries
+        tasks.extend(
+            partial(_market_data_timed, query, request_id, ignore_errors=ignore_errors) for query in queries)
+    return tasks
+
+
 def get_historical_and_last_for_measure(asset_ids: List[str],
                                         query_type,
                                         where: dict,
@@ -4549,23 +4593,18 @@ def get_historical_and_last_for_measure(asset_ids: List[str],
                                         source: str = None,
                                         real_time: bool = False,
                                         request_id: Optional[str] = None,
-                                        chunk_size: int = 5):
-    tasks = []
-    for i, chunked_assets in enumerate(chunk(asset_ids, chunk_size)):
-        query = GsDataApi.build_market_data_query(
-            chunked_assets,
-            query_type,
-            where=where,
-            source=source,
-            real_time=real_time)
-
-        tasks.append(partial(_market_data_timed, query, request_id))
+                                        chunk_size: int = 5,
+                                        ignore_errors: bool = False,
+                                        parallel_pool_size: int = 1):
+    tasks = get_market_data_tasks(asset_ids, query_type, where, source=source, real_time=real_time,
+                                  request_id=request_id, chunk_size=chunk_size, ignore_errors=ignore_errors,
+                                  parallel_pool_size=parallel_pool_size)
 
     if not real_time and DataContext.current.end_date >= datetime.date.today():
         where_list = _split_where_conditions(where)
         for w in where_list:
             tasks.append(partial(get_last_for_measure, asset_ids=asset_ids, query_type=query_type, where=w,
-                                 source=source, request_id=request_id))
+                                 source=source, request_id=request_id, ignore_errors=ignore_errors))
 
     results = ThreadPoolManager.run_async(tasks)
     return merge_dataframes(results)

@@ -42,8 +42,9 @@ def get_risk_request_id(requests):
         identifier += '-'.join([pos.instrument.name for pos in request.positions])
         identifier += '-'.join([r.__repr__() for r in request.measures])
         date = request.pricing_and_market_data_as_of[0].pricing_date.strftime('%Y%b%d')
-        today = business_day_offset(datetime.date.today(), 0, roll='preceding').strftime('%Y%b%d')
-        identifier += 'today' if date == today else date
+        today_pre = business_day_offset(datetime.date.today(), 0, roll='preceding').strftime('%Y%b%d')
+        today_post = business_day_offset(datetime.date.today(), 0, roll='following').strftime('%Y%b%d')
+        identifier += 'today' if date in (today_post, today_pre) else date
         if request.scenario is not None:
             if isinstance(request.scenario.scenario, CompositeScenario):
                 underlying_scenarios = request.scenario.scenario.scenarios
@@ -65,11 +66,11 @@ class MockCalc(MockRequest):
     def __init__(self, mocker, save_files=False, paths=None, application='gs-quant'):
         super().__init__(mocker, save_files, paths, application)
         self.paths = paths if paths else \
-            Path(next(filter(lambda x: x.code_context and 'MockCalc' in x.code_context[0],
+            Path(next(filter(lambda x: x.code_context and self.__class__.__name__ in x.code_context[0],
                              inspect.stack())).filename).parents[1]
 
     def mock_calc_create_files(self, *args, **kwargs):
-        from orjson import orjson
+        import orjson
 
         # never leave a side_effect calling this function.  Call it once to create the files, check them in
         # and switch to mock_calc

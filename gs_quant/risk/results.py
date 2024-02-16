@@ -26,7 +26,7 @@ import pandas as pd
 from gs_quant.base import Priceable, RiskKey, Sentinel, InstrumentBase, is_instance_or_iterable, is_iterable, Scenario
 from gs_quant.common import RiskMeasure
 from gs_quant.config import DisplayOptions
-from gs_quant.risk import DataFrameWithInfo, ErrorValue, FloatWithInfo, SeriesWithInfo, ResultInfo, \
+from gs_quant.risk import DataFrameWithInfo, ErrorValue, UnsupportedValue, FloatWithInfo, SeriesWithInfo, ResultInfo, \
     ScalarWithInfo, aggregate_results
 from gs_quant.risk.transform import Transformer
 from more_itertools import unique_everseen
@@ -123,6 +123,9 @@ def _compose(lhs: ResultInfo, rhs: ResultInfo) -> ResultInfo:
 def _value_for_date(result: Union[DataFrameWithInfo, SeriesWithInfo], date: Union[Iterable, dt.date]) -> \
         Union[DataFrameWithInfo, ErrorValue, FloatWithInfo, SeriesWithInfo]:
     from gs_quant.markets import CloseMarket
+
+    if result.empty:
+        return result
 
     raw_value = result.loc[date]
     key = result.risk_key
@@ -336,7 +339,11 @@ class MultipleRiskMeasureResult(dict):
     def __op(self, operator, operand):
         values = {}
         for key, value in self.items():
-            if isinstance(value, pd.DataFrame) or isinstance(value, pd.Series):
+            if isinstance(value, SeriesWithInfo) or isinstance(value, DataFrameWithInfo):
+                new_value = value.copy_with_resultinfo()
+                if not value.empty:
+                    new_value.value = operator(value.value, operand)
+            elif isinstance(value, pd.DataFrame) or isinstance(value, pd.Series):
                 new_value = value.copy()
                 new_value.value = operator(value.value, operand)
             else:
@@ -474,7 +481,7 @@ class HistoricalPricingFuture(CompositeResultFuture):
 
     def _set_result(self):
         results = [f.result() for f in self.futures]
-        base = next((r for r in results if not isinstance(r, (ErrorValue, Exception))), None)
+        base = next((r for r in results if not isinstance(r, (ErrorValue, UnsupportedValue, Exception))), None)
 
         if base is None:
             _logger.error(f'Historical pricing failed: {results[0]}')
@@ -761,19 +768,24 @@ class PortfolioRiskResult(CompositeResultFuture):
                                              ((r, self[r].transform(risk_transformation)) for r in
                                               self.__risk_measures))
         elif len(self.__risk_measures) == 1:
-            transformed_future = PricingFuture()
-            transformed_future.set_result(risk_transformation.apply(self.__results()))
-            transformed_future.done()
-            return PortfolioRiskResult(self.portfolio, self.risk_measures, (transformed_future,))
+            flattened_results = risk_transformation.apply(self.__results())
+            futures = []
+            for result in flattened_results:
+                transformed_future = PricingFuture()
+                transformed_future.set_result(result)
+                transformed_future.done()
+                futures.append(transformed_future)
+            return PortfolioRiskResult(self.portfolio, self.risk_measures, futures)
         else:
             return self
 
-    def aggregate(self, allow_mismatch_risk_keys=False) -> Union[float, pd.DataFrame, pd.Series,
-                                                                 MultipleRiskMeasureResult]:
+    def aggregate(self, allow_mismatch_risk_keys=False,
+                  allow_heterogeneous_types=False) -> Union[float, pd.DataFrame, pd.Series, MultipleRiskMeasureResult]:
         if len(self.__risk_measures) > 1:
             return MultipleRiskMeasureResult(self.portfolio, ((r, self[r].aggregate()) for r in self.__risk_measures))
         else:
-            return aggregate_results(self.__results(), allow_mismatch_risk_keys=allow_mismatch_risk_keys)
+            return aggregate_results(self.__results(), allow_mismatch_risk_keys=allow_mismatch_risk_keys,
+                                     allow_heterogeneous_types=allow_heterogeneous_types)
 
     def _to_records(self, display_options: DisplayOptions = None):
         def get_records(rec):

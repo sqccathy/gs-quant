@@ -14,8 +14,6 @@ specific language governing permissions and limitations
 under the License.
 """
 
-import datetime as dt
-
 from gs_quant.target.common import *
 from gs_quant.target.common import PayReceive as _PayReceive
 from gs_quant.target.common import RiskMeasure as __RiskMeasure
@@ -35,14 +33,12 @@ class PositionType(Enum):
 
 
 class DateLimit(Enum):
-    
     """ Datetime date constants """
 
     LOW_LIMIT = dt.date(1952, 1, 1)
 
 
 class PayReceive(EnumBase, Enum):
-
     """Pay or receive fixed"""
 
     Pay = 'Pay'
@@ -55,14 +51,6 @@ class PayReceive(EnumBase, Enum):
             key = key.value
 
         return cls.Receive if key.lower() in ('receive', 'receiver') else super()._missing_(key)
-
-
-class MarketBehaviour(EnumBase, Enum):
-
-    """ContraintsBased or Calibrated"""
-
-    ContraintsBased = 'ContraintsBased'
-    Calibrated = 'Calibrated'
 
 
 class RiskMeasure(__RiskMeasure):
@@ -114,4 +102,3 @@ class ParameterisedRiskMeasure(RiskMeasure):
 
     def parameter_is_empty(self):
         return self.parameters is None
-

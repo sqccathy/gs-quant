@@ -215,6 +215,33 @@ CDFwdSpread.__doc__ = "Credit Forward Spread"
 CDGamma = RiskMeasure(name="CDGamma", asset_class=AssetClass("Credit"), measure_type=RiskMeasureType("Gamma"))
 CDGamma.__doc__ = "CDIndexGamma"
 
+CDIForward = RiskMeasure(name="CDIForward", asset_class=AssetClass("Credit"), measure_type=RiskMeasureType("CDIForward"))
+CDIForward.__doc__ = "CDS Index Forward Quote in the Prevailing Quoting Style."
+
+CDIIndexDelta = RiskMeasure(name="CDIIndexDelta", asset_class=AssetClass("Credit"), measure_type=RiskMeasureType("CDIIndexDelta"))
+CDIIndexDelta.__doc__ = "CDS Index Delta."
+
+CDIIndexVega = RiskMeasure(name="CDIIndexVega", asset_class=AssetClass("Credit"), measure_type=RiskMeasureType("CDIIndexVega"))
+CDIIndexVega.__doc__ = "CDS Index Vega."
+
+CDIOptionPremium = RiskMeasure(name="CDIOptionPremium", asset_class=AssetClass("Credit"), measure_type=RiskMeasureType("CDIOptionPremium"))
+CDIOptionPremium.__doc__ = "CDS Index Option Premium"
+
+CDIOptionPremiumFlatFwd = RiskMeasure(name="CDIOptionPremiumFlatFwd", asset_class=AssetClass("Credit"), measure_type=RiskMeasureType("CDIOptionPremiumFlatFwd"))
+CDIOptionPremiumFlatFwd.__doc__ = "CDS Index Option Premium assuming Flat Forwards."
+
+CDIOptionPremiumFlatVol = RiskMeasure(name="CDIOptionPremiumFlatVol", asset_class=AssetClass("Credit"), measure_type=RiskMeasureType("CDIOptionPremiumFlatVol"))
+CDIOptionPremiumFlatVol.__doc__ = "CDS Index Option Premium assuming Flat Volatilities."
+
+CDISpot = RiskMeasure(name="CDISpot", asset_class=AssetClass("Credit"), measure_type=RiskMeasureType("CDISpot"))
+CDISpot.__doc__ = "CDS Index Spot Quote in the Prevailing Quoting Style."
+
+CDISpreadDV01 = RiskMeasure(name="CDISpreadDV01", asset_class=AssetClass("Credit"), measure_type=RiskMeasureType("CDISpreadDV01"))
+CDISpreadDV01.__doc__ = "CDS Index Rates DV01."
+
+CDIUpfrontPrice = RiskMeasure(name="CDIUpfrontPrice", asset_class=AssetClass("Credit"), measure_type=RiskMeasureType("CDIUpfrontPrice"))
+CDIUpfrontPrice.__doc__ = "CDS Index Upfront Price."
+
 CDImpliedVolatility = RiskMeasure(name="CDImpliedVolatility", asset_class=AssetClass("Credit"), measure_type=RiskMeasureType("Implied Volatility"))
 CDImpliedVolatility.__doc__ = "CDImpliedVolatility"
 
@@ -278,6 +305,15 @@ EqTheta.__doc__ = "Change in Dollar Price over one day"
 EqVega = RiskMeasureWithCurrencyParameter(name="EqVega", asset_class=AssetClass("Equity"), measure_type=RiskMeasureType("Vega"))
 EqVega.__doc__ = "Change in Dollar Price (USD present value) due to individual 1bp moves in the implied volatility of the underlying equity security"
 
+ExpiryInYears = RiskMeasure(name="ExpiryInYears", measure_type=RiskMeasureType("ExpiryInYears"))
+ExpiryInYears.__doc__ = "Time to Expiry expressed in fractional Years."
+
+FX25DeltaButterflyVolatility = RiskMeasure(name="FX25DeltaButterflyVolatility", asset_class=AssetClass("FX"), measure_type=RiskMeasureType("FX BF 25 Vol"))
+FX25DeltaButterflyVolatility.__doc__ = "The volatility of a 25 delta butterfly"
+
+FX25DeltaRiskReversalVolatility = RiskMeasure(name="FX25DeltaRiskReversalVolatility", asset_class=AssetClass("FX"), measure_type=RiskMeasureType("FX RR 25 Vol"))
+FX25DeltaRiskReversalVolatility.__doc__ = "The volatility of a 25 delta risk reversal"
+
 FXAnnualATMImpliedVol = RiskMeasure(name="FXAnnualATMImpliedVol", asset_class=AssetClass("FX"), measure_type=RiskMeasureType("Annual ATM Implied Volatility"), unit=RiskMeasureUnit("Percent"))
 FXAnnualATMImpliedVol.__doc__ = "FX Annual ATM Implied Volatility"
 
@@ -299,6 +335,9 @@ FXCalcDeltaNoPremAdj.__doc__ = "FXCalcDeltaNoPremAdj"
 FXDelta = RiskMeasureWithFiniteDifferenceParameter(name="FXDelta", asset_class=AssetClass("FX"), measure_type=RiskMeasureType("Delta"))
 FXDelta.__doc__ = "Dollar Price sensitivity of the instrument to a move in the underlying spot such that dSpot * FXDelta = PnL"
 
+FXDeltaHedge = RiskMeasure(name="FXDeltaHedge", asset_class=AssetClass("FX"), measure_type=RiskMeasureType("FX Hedge Delta"))
+FXDeltaHedge.__doc__ = "Size of the spot trade in the underlying currency needed to hedge the USD delta on a per-cross basis"
+
 FXDiscountFactorOver = RiskMeasure(name="FXDiscountFactorOver", asset_class=AssetClass("FX"), measure_type=RiskMeasureType("FX Discount Factor Over"))
 FXDiscountFactorOver.__doc__ = "Discount Factor to Maturity in the Over Currency of the FX Pair"
 
@@ -310,6 +349,9 @@ FXFwd.__doc__ = "FXFwd"
 
 FXGamma = RiskMeasure(name="FXGamma", asset_class=AssetClass("FX"), measure_type=RiskMeasureType("Gamma"))
 FXGamma.__doc__ = "FXDelta sensitivity of the instrument to a move in the underlying spot such that dSpot * FXGamma = dDelta"
+
+FXImpliedCorrelation = RiskMeasure(name="FXImpliedCorrelation", asset_class=AssetClass("FX"), measure_type=RiskMeasureType("Correlation"))
+FXImpliedCorrelation.__doc__ = "Correlation and Vol information"
 
 FXPoints = RiskMeasure(name="FXPoints", asset_class=AssetClass("FX"), measure_type=RiskMeasureType("Points"))
 FXPoints.__doc__ = "FXPoints"
@@ -340,6 +382,9 @@ FXVega.__doc__ = "Change in Dollar Price due to a 1 vol move in the implied vola
 
 FairPremium = RiskMeasureWithCurrencyParameter(name="FairPremium", measure_type=RiskMeasureType("FairPremium"))
 FairPremium.__doc__ = "Fair Premium is the instrument present value discounted to the premium settlement date"
+
+FairPremiumInPercent = RiskMeasure(name="FairPremiumInPercent", asset_class=AssetClass("FX"), measure_type=RiskMeasureType("FairPremiumPct"), unit=RiskMeasureUnit("Percent"))
+FairPremiumInPercent.__doc__ = "The instrument present value discounted to the premium settlement excluding any embedded premium date as a percentage"
 
 FairPrice = RiskMeasure(name="FairPrice", asset_class=AssetClass("Commod"), measure_type=RiskMeasureType("Fair Price"))
 FairPrice.__doc__ = "FairPrice"
@@ -451,6 +496,15 @@ PricePips.__doc__ = "Present value in pips"
 
 ProbabilityOfExercise = RiskMeasure(name="ProbabilityOfExercise", measure_type=RiskMeasureType("Probability Of Exercise"))
 ProbabilityOfExercise.__doc__ = "Probability Of Exercise"
+
+RFRFXRate = RiskMeasure(name="RFRFXRate", asset_class=AssetClass("FX"), measure_type=RiskMeasureType("RFRFXRate"))
+RFRFXRate.__doc__ = "RFRFXRate"
+
+RFRFXSprExSpkRate = RiskMeasure(name="RFRFXSprExSpkRate", asset_class=AssetClass("FX"), measure_type=RiskMeasureType("RFRFXSpreadRateExcludingSpikes"))
+RFRFXSprExSpkRate.__doc__ = "RFRFXSprExSpkRate"
+
+RFRFXSprRate = RiskMeasure(name="RFRFXSprRate", asset_class=AssetClass("FX"), measure_type=RiskMeasureType("RFRFXSpreadRate"))
+RFRFXSprRate.__doc__ = "RFRFXSprRate"
 
 ResolvedInstrumentValues = RiskMeasure(name="ResolvedInstrumentValues", measure_type=RiskMeasureType("Resolved Instrument Values"))
 ResolvedInstrumentValues.__doc__ = "Resolved InstrumentBase Values"
