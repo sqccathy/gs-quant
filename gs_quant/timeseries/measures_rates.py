@@ -348,11 +348,7 @@ def _currency_to_tdapi_swap_rate_asset(asset_spec: ASSET_SPEC) -> str:
 
 
 def _currency_to_tdapi_swap_rate_asset_for_intraday(asset_spec: ASSET_SPEC) -> str:
-    asset = _asset_from_spec(asset_spec)
-    bbid = asset.get_identifier(AssetIdentifier.BLOOMBERG_ID)
-    # for each currency, get a dummy asset for checking availability
-    result = SUPPORTED_INTRADAY_CURRENCY_TO_DUMMY_SWAP_BBID.get(bbid, asset.get_marquee_id())
-    return result
+    return 'MACF6R4J5FY4KGBZ'
 
 
 def _currency_to_tdapi_asset_base(asset_spec: ASSET_SPEC, allowed_bbids=None) -> str:
@@ -507,7 +503,8 @@ class BenchmarkType(Enum):
     SIOR = 'SIOR'
 
 
-def _check_benchmark_type(currency, benchmark_type: Union[BenchmarkType, str]) -> BenchmarkType:
+def _check_benchmark_type(currency, benchmark_type: Union[BenchmarkType, str], nothrow: bool = False) \
+        -> Union[BenchmarkType, str]:
     if isinstance(benchmark_type, str):
         if benchmark_type.upper() in BenchmarkType.__members__:
             benchmark_type = BenchmarkType[benchmark_type.upper()]
@@ -515,12 +512,15 @@ def _check_benchmark_type(currency, benchmark_type: Union[BenchmarkType, str]) -
             benchmark_type = BenchmarkType.Fed_Funds
         elif benchmark_type in ['estr', 'ESTR', 'eurostr', 'EuroStr']:
             benchmark_type = BenchmarkType.EUROSTR
+        elif not nothrow:
+            raise MqValueError(f'{benchmark_type} is not valid, pick one among ' +
+                               ', '.join([x.value for x in BenchmarkType]))
         else:
-            raise MqValueError('%s is not valid, pick one among ' + ', '.join([x.value for x in BenchmarkType]))
+            return benchmark_type
 
     if isinstance(benchmark_type, BenchmarkType) and \
             benchmark_type.value not in CURRENCY_TO_SWAP_RATE_BENCHMARK[currency.value].keys():
-        raise MqValueError('%s is not supported for %s', benchmark_type.value, currency.value)
+        raise MqValueError(f'{benchmark_type.value} is not supported for {currency.value}')
     else:
         return benchmark_type
 
@@ -577,14 +577,20 @@ def _get_benchmark_type(currency: CurrencyEnum, benchmark_type: BenchmarkType = 
     return benchmark_type_input
 
 
-def _get_swap_leg_defaults(currency: CurrencyEnum, benchmark_type: BenchmarkType = None,
+def _get_swap_leg_defaults(currency: CurrencyEnum, benchmark_type: Union[BenchmarkType, str] = None,
                            floating_rate_tenor: str = None) -> dict:
     pricing_location = CURRENCY_TO_PRICING_LOCATION.get(currency, PricingLocation.LDN)
     # default benchmark types
-    benchmark_type_input = _get_benchmark_type(currency, benchmark_type)
+    if not isinstance(benchmark_type, str):
+        benchmark_type_input = _get_benchmark_type(currency, benchmark_type)
+    else:
+        benchmark_type_input = benchmark_type
     # default floating index
     if floating_rate_tenor is None:
-        floating_rate_tenor = BENCHMARK_TO_DEFAULT_FLOATING_RATE_TENORS[benchmark_type_input]
+        if benchmark_type_input in BENCHMARK_TO_DEFAULT_FLOATING_RATE_TENORS:
+            floating_rate_tenor = BENCHMARK_TO_DEFAULT_FLOATING_RATE_TENORS[benchmark_type_input]
+        else:
+            raise MqValueError(f"{benchmark_type_input} has no default fixing tenor, please specify one")
 
     return dict(currency=currency, benchmark_type=benchmark_type_input,
                 floating_rate_tenor=floating_rate_tenor, pricing_location=pricing_location)
@@ -669,15 +675,15 @@ def _get_swap_data(asset: Asset, swap_tenor: str, benchmark_type: str = None, fl
 
 
 def _get_swap_data_calc(asset: Asset, swap_tenor: str, benchmark_type: str = None, floating_rate_tenor: str = None,
-                        forward_tenor: Optional[GENERIC_DATE] = None, clearing_house: _ClearingHouse = None,
+                        forward_tenor: Optional[GENERIC_DATE] = None, csa: str = None,
                         real_time: bool = False, location: PricingLocation = None) -> pd.DataFrame:
     currency = CurrencyEnum(asset.get_identifier(AssetIdentifier.BLOOMBERG_ID))
 
-    if currency.value not in SUPPORTED_INTRADAY_CURRENCY_TO_DUMMY_SWAP_BBID.keys():
-        raise NotImplementedError(f'Data not available for {currency.value} calculated swap rates')
-    benchmark_type = _check_benchmark_type(currency, benchmark_type)
+    benchmark_type = _check_benchmark_type(currency, benchmark_type, True)
 
-    clearing_house = _check_clearing_house(clearing_house)
+    clearing_house = SwapClearingHouse.LCH
+    if csa in ['EUREX', 'JSCC', 'CME']:
+        clearing_house = SwapClearingHouse(csa)
 
     defaults = _get_swap_leg_defaults(currency, benchmark_type, floating_rate_tenor)
 
@@ -686,18 +692,18 @@ def _get_swap_data_calc(asset: Asset, swap_tenor: str, benchmark_type: str = Non
 
     forward_tenor = _check_forward_tenor(forward_tenor)
 
-    builder = IRSwap(notional_currency=currency, clearing_house=SwapClearingHouse(clearing_house.value),
+    builder = IRSwap(notional_currency=currency, clearing_house=clearing_house,
                      floating_rate_designated_maturity=defaults['floating_rate_tenor'],
                      floating_rate_option=defaults['benchmark_type'],
                      fixed_rate=0.0, termination_date=swap_tenor)
 
     if forward_tenor:
-        builder.startdate = forward_tenor
+        builder.effective_date = forward_tenor
 
     _logger.debug(f'where builder={builder.as_dict()}')
 
     location = location or PricingLocation.NYC
-    q = GsDataApi.get_mxapi_backtest_data(builder, close_location=location.value, real_time=real_time)
+    q = GsDataApi.get_mxapi_backtest_data(builder, close_location=location.value, real_time=real_time, csa=csa)
     return q
 
 
@@ -1284,13 +1290,15 @@ def swap_rate(asset: Asset, swap_tenor: str, benchmark_type: str = None, floatin
 
 @plot_measure((AssetClass.Cash,), (AssetType.Currency,),
               [MeasureDependency(id_provider=_currency_to_tdapi_swap_rate_asset_for_intraday,
-                                 query_type=QueryType.SWAP_RATE)])
+                                 query_type=QueryType.SPOT)])
 def swap_rate_calc(asset: Asset, swap_tenor: str, benchmark_type: str = None, floating_rate_tenor: str = None,
-                   forward_tenor: Optional[GENERIC_DATE] = None, clearing_house: _ClearingHouse = _ClearingHouse.LCH,
+                   forward_tenor: Optional[GENERIC_DATE] = None, csa: str = None,
                    location: PricingLocation = None, *,
                    source: str = None, real_time: bool = False) -> Series:
     """
     GS intra-day Fixed-Floating interest rate swap (IRS) curves across major currencies.
+    This API runs on-the-fly calculations
+
 
     :param asset: asset object loaded from security master
     :param swap_tenor: relative date representation of expiration date e.g. 1m
@@ -1298,43 +1306,37 @@ def swap_rate_calc(asset: Asset, swap_tenor: str, benchmark_type: str = None, fl
     :param floating_rate_tenor: floating index rate
     :param forward_tenor: absolute / relative date representation of forward starting point eg: '1y' or 'Spot' for
             spot starting swaps, 'imm1' or 'frb1'
-    :param clearing_house: Example - "LCH", "CME"
+    :param csa: Collateral type or clearing house for cleared swaps - set to Default for standard domestic funding.
     :param location: Example - "TKO", "LDN", "NYC"
     :param source: name of function caller
     :param real_time: whether to retrieve intraday data instead of EOD
     :return: swap rate curve
     """
+
     df = _get_swap_data_calc(asset=asset, swap_tenor=swap_tenor, benchmark_type=benchmark_type,
                              floating_rate_tenor=floating_rate_tenor, forward_tenor=forward_tenor,
-                             clearing_house=clearing_house, real_time=real_time, location=location)
+                             csa=csa, real_time=real_time, location=location)
 
     series = ExtendedSeries(dtype=float) if df.empty else ExtendedSeries(df['ATMRate'])
     series.dataset_ids = ()
     return series
 
 
-def _csa_default(csa=None, currency=None):
-    if not csa:
-        if currency.value in CURRENCY_TO_CSA_DEFAULT_MAP:
-            csa = CURRENCY_TO_CSA_DEFAULT_MAP[currency.value]
-        else:
-            csa = f'{currency.value}-1'
-    return csa
-
-
 @plot_measure((AssetClass.Cash,), (AssetType.Currency,),
-              [MeasureDependency(id_provider=_currency_to_tdapi_swap_rate_asset,
-                                 query_type=QueryType.SWAP_RATE)])
-def forward_rate(asset: Asset, forward_start_tenor: str = None, forward_term: str = None, csa: str = None,
+              [MeasureDependency(id_provider=_currency_to_tdapi_swap_rate_asset_for_intraday,
+                                 query_type=QueryType.SPOT)])
+def forward_rate(asset: Asset, forward_start_tenor: str = None, forward_term: str = None,
+                 csa: str = None,
                  close_location: str = None, *, source: str = None, real_time: bool = False) -> Series:
     """
     GS Forward Rate across major currencies.
+    This API computes forward rates off stored forward/discount curves
 
 
     :param asset: asset object loaded from security master
     :param forward_start_tenor: Relative date of start of forward e.g. 1y
     :param forward_term:    Term of forward, e.g. 3m
-    :param csa: Collateral code of curve, e.g. GBP-1. If not specified, default CSA is chosen
+    :param csa: Collateral code of curve, e.g. GBP-1. If set to default, default CSA is chosen
     :param close_location: For EOD data, gives location of close
     :param source: name of function caller
     :param real_time: whether to retrieve intra-day data instead of EOD
@@ -1342,7 +1344,7 @@ def forward_rate(asset: Asset, forward_start_tenor: str = None, forward_term: st
     """
 
     currency = CurrencyEnum(asset.get_identifier(AssetIdentifier.BLOOMBERG_ID))
-    csa = _csa_default(csa, currency)
+    csa = csa or 'Default'
     close_location = close_location or 'NYC'
     if not forward_term:
         raise MqValueError("Forward rate term not specified")
@@ -1360,17 +1362,18 @@ def forward_rate(asset: Asset, forward_start_tenor: str = None, forward_term: st
 
 
 @plot_measure((AssetClass.Cash,), (AssetType.Currency,),
-              [MeasureDependency(id_provider=_currency_to_tdapi_swap_rate_asset,
-                                 query_type=QueryType.SWAP_RATE)])
+              [MeasureDependency(id_provider=_currency_to_tdapi_swap_rate_asset_for_intraday,
+                                 query_type=QueryType.SPOT)])
 def discount_factor(asset: Asset, tenor: str = None, csa: str = None, close_location: str = None,
                     *, source: str = None, real_time: bool = False) -> Series:
     """
     GS Discount Factor across major currencies.
+    This API computes discount factor off stored forward/discount curves
 
 
     :param asset: asset object loaded from security master
-    :param tenor: tenor of IFR e.g. 1m
-    :param csa: Collateral code of curve to fetch IFR, e.g. GBP-1. If not specified, default CSA is chosen
+    :param tenor: tenor of discount factor e.g. 1m
+    :param csa: Collateral code of curve to fetch discount factor, e.g. GBP-1. If not specified, default CSA is chosen
     :param close_location: For EOD data, gives location of close
     :param source: name of function caller
     :param real_time: whether to retrieve intra-day data instead of EOD
@@ -1382,7 +1385,7 @@ def discount_factor(asset: Asset, tenor: str = None, csa: str = None, close_loca
     if not tenor:
         raise MqValueError("Discount Curve start and end date not specified")
 
-    csa = _csa_default(csa, currency)
+    csa = csa or 'Default'
 
     measure = f'DF:{tenor}'
     df = GsDataApi.get_mxapi_curve_measure('DISCOUNT CURVE', currency.value, [], [csa], measure,
@@ -1394,17 +1397,19 @@ def discount_factor(asset: Asset, tenor: str = None, csa: str = None, close_loca
 
 
 @plot_measure((AssetClass.Cash,), (AssetType.Currency,),
-              [MeasureDependency(id_provider=_currency_to_tdapi_swap_rate_asset,
-                                 query_type=QueryType.SWAP_RATE)])
-def instantaneous_forward_rate(asset: Asset, tenor: str = None, csa: str = None, close_location: str = None,
+              [MeasureDependency(id_provider=_currency_to_tdapi_swap_rate_asset_for_intraday,
+                                 query_type=QueryType.SPOT)])
+def instantaneous_forward_rate(asset: Asset, tenor: str = None, csa: str = None,
+                               close_location: str = None,
                                *, source: str = None, real_time: bool = False) -> Series:
     """
     GS Floating Rate Benchmark annualised instantaneous forward rates across major currencies.
+    This API computes IFR off stored forward/discount curves
 
 
     :param asset: asset object loaded from security master
     :param tenor: tenor of IFR e.g. 1m
-    :param csa: Collateral code of curve to fetch IFR
+    :param csa: Collateral code of curve to fetch IFR. Set to default for default collateral
     :param close_location: For EOD data, gives location of close
     :param source: name of function caller
     :param real_time: whether to retrieve intraday data instead of EOD
@@ -1416,7 +1421,7 @@ def instantaneous_forward_rate(asset: Asset, tenor: str = None, csa: str = None,
     if not tenor:
         raise MqValueError("Forward rate tenor not specified")
 
-    csa = _csa_default(csa, currency)
+    csa = csa or 'Default'
 
     measure = f'IFR:{tenor}'
     df = GsDataApi.get_mxapi_curve_measure('DISCOUNT CURVE', currency.value, [], [csa], measure,
@@ -1428,13 +1433,14 @@ def instantaneous_forward_rate(asset: Asset, tenor: str = None, csa: str = None,
 
 
 @plot_measure((AssetClass.Cash,), (AssetType.Currency,),
-              [MeasureDependency(id_provider=_currency_to_tdapi_swap_rate_asset,
-                                 query_type=QueryType.SWAP_RATE)])
+              [MeasureDependency(id_provider=_currency_to_tdapi_swap_rate_asset_for_intraday,
+                                 query_type=QueryType.SPOT)])
 def index_forward_rate(asset: Asset, forward_start_tenor: str = None, benchmark_type: str = None,
                        fixing_tenor: str = None, close_location: str = None, *,
                        source: str = None, real_time: bool = False) -> Series:
     """
     GS annualised forward rates across floating rate benchmark
+    This API computes index forward rate off stored index forward curves
 
 
     :param asset: asset object loaded from security master
@@ -1451,10 +1457,16 @@ def index_forward_rate(asset: Asset, forward_start_tenor: str = None, benchmark_
     if not forward_start_tenor:
         raise MqValueError("Forward rate start date not specified")
 
-    benchmark_type = _check_benchmark_type(currency, benchmark_type)
-    benchmark_type_input = _get_benchmark_type(currency, benchmark_type)
+    benchmark_type = _check_benchmark_type(currency, benchmark_type, True)
+    if not isinstance(benchmark_type, str):
+        benchmark_type_input = _get_benchmark_type(currency, benchmark_type)
+    else:
+        benchmark_type_input = benchmark_type
 
     if fixing_tenor is None:
+        if benchmark_type_input not in BENCHMARK_TO_DEFAULT_FLOATING_RATE_TENORS:
+            raise MqValueError("Please provide fixing tenor: " +
+                               f"default fixing tenor not specified for {benchmark_type_input}")
         fixing_tenor = BENCHMARK_TO_DEFAULT_FLOATING_RATE_TENORS[benchmark_type_input]
 
     measure = f'FR:{forward_start_tenor}:{fixing_tenor}'

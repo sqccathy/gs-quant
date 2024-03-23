@@ -799,7 +799,7 @@ def cds_spread(asset: Asset, spread: int, *, source: str = None, real_time: bool
                                  query_type=QueryType.IMPLIED_VOLATILITY)],
               asset_type_excluded=(AssetType.CommodityNaturalGasHub,))
 def implied_volatility(asset: Asset, tenor: str, strike_reference: VolReference = None,
-                       relative_strike: Real = None, parallel_pool_size: int = 1, *, source: str = None,
+                       relative_strike: Real = None, parallelize_queries: bool = True, *, source: str = None,
                        real_time: bool = False, request_id: Optional[str] = None) -> Series:
     """
     Volatility of an asset implied by observations of market prices.
@@ -809,8 +809,8 @@ def implied_volatility(asset: Asset, tenor: str, strike_reference: VolReference 
             or absolute calendar strips e.g. 'Cal20', 'F20-G20'
     :param strike_reference: reference for strike level
     :param relative_strike: strike relative to reference
-    :param parallel_pool_size: chunk time range into 'parallel_pool_size' intervals
-    to execute parallel queries
+    :param parallelize_queries: send parallel queries to the measures API
+    chunked over an interval of a year based on the date context
     :param source: name of function caller
     :param real_time: whether to retrieve intraday data instead of EOD
     :param request_id: service request id, if any
@@ -836,7 +836,7 @@ def implied_volatility(asset: Asset, tenor: str, strike_reference: VolReference 
     # Parallel calls when fetching / appending last results
     df = get_historical_and_last_for_measure([asset_id], QueryType.IMPLIED_VOLATILITY, where, source=source,
                                              real_time=real_time, request_id=request_id,
-                                             parallel_pool_size=parallel_pool_size)
+                                             parallelize_queries=parallelize_queries)
 
     s = _extract_series_from_df(df, QueryType.IMPLIED_VOLATILITY)
     return s
@@ -4225,6 +4225,48 @@ def commodity_forecast(asset: Asset, forecastPeriod: str = "3m",
     return series
 
 
+def _get_marketdate_validation(market_date, start_date, end_date, timezone=None):
+    """
+    Validates the market date provided by the user
+    @param market_date: date string provided by the user
+    @param start_date: passed form data context
+    @param end_date: passed form data context
+    @param timezone: passed for power forward curve
+    @return: modifies market_date, start_date if applied
+    """
+    if not isinstance(market_date, str):
+        raise MqTypeError('Market date should be of string data type as \'YYYYMMDD\'')
+    # If no date entered by user, assign last weekday or convert entered string format to date object
+    if len(market_date) == 0:
+        market_date = pd.Timestamp.today().date()
+        while market_date.weekday() > 4:
+            market_date -= datetime.timedelta(days=1)
+    else:
+        try:
+            market_date = dt.datetime.strptime(market_date, "%Y%m%d").date()
+        except ValueError:
+            raise MqValueError('Market date should be of format as \'YYYYMMDD\'')
+
+    # Check if market date is future date for the given asset
+    if timezone:
+        today_date = pd.Timestamp.today(tz=timezone).date()
+
+    else:
+        today_date = pd.Timestamp.today().date()
+    if market_date > today_date:
+        raise MqValueError('Market date cannot be a future date')
+    # Check if market date is weekend
+    if market_date.weekday() > 4:
+        raise MqValueError('Market date cannot be a weekend')
+    # Check if market date is within end and start date ranges
+    if market_date > end_date:
+        raise MqValueError('Market date should be within end date for query')
+    if market_date > start_date:
+        start_date = market_date
+
+    return market_date, start_date
+
+
 @plot_measure((AssetClass.Commod,), (AssetType.Index, AssetType.CommodityPowerAggregatedNodes,
                                      AssetType.CommodityPowerNode,), [QueryType.FORWARD_PRICE])
 def forward_curve(asset: Asset, bucket: str = 'PEAK', market_date: str = "",
@@ -4244,31 +4286,8 @@ def forward_curve(asset: Asset, bucket: str = 'PEAK', market_date: str = "",
 
     # Validations for date inputs
     start, end = DataContext.current.start_date, DataContext.current.end_date
-    if not isinstance(market_date, str):
-        raise MqTypeError('Market date should be of string data type as \'YYYYMMDD\'')
-    # If no date entered by user, assign last weekday or convert entered string format to date object
-    if len(market_date) == 0:
-        market_date = pd.Timestamp.today().date()
-        while market_date.weekday() > 4:
-            market_date -= datetime.timedelta(days=1)
-    else:
-        try:
-            market_date = dt.datetime.strptime(market_date, "%Y%m%d").date()
-        except ValueError:
-            raise MqValueError('Market date should be of format as \'YYYYMMDD\'')
-
-    # Check if market date is future date for the given asset
     timezone = _get_iso_data(asset.name.split()[0])[0]
-    if market_date > pd.Timestamp.today(tz=timezone).date():
-        raise MqValueError('Market date cannot be a future date')
-    # Check if market date is weekend
-    if market_date.weekday() > 4:
-        raise MqValueError('Market date cannot be a weekend')
-    # Check if market date is within end and start date ranges
-    if market_date > end:
-        raise MqValueError('Market date should be within end date for query')
-    if market_date > start:
-        start = market_date
+    market_date, start = _get_marketdate_validation(market_date, start, end, timezone)
 
     # Check if market date do not have an entry, a holiday or value not entered yet, if so get prev date value
     ds = Dataset('COMMOD_US_ELEC_ENERGY_FORWARD_PRICES')
@@ -4316,6 +4335,77 @@ def forward_curve(asset: Asset, bucket: str = 'PEAK', market_date: str = "",
         df = df.groupby('contract').agg({'weight': 'sum', 'forwardPrice': 'sum'})
         df['forwardPrice'] = df['forwardPrice'] / df['weight']
         df = df.reset_index()
+
+    # Map contract to plot date and format output
+    for row in df.itertuples():
+        df.at[row.Index, 'contract'] = forward_dates_to_plot[df.at[row.Index, 'contract']]
+    df = df.sort_values(by=['contract'])
+    df = df.set_index('contract')
+
+    # Create Extended Series for return
+    result = ExtendedSeries(df['forwardPrice'], index=df.index)
+    result = result.rename_axis(None, axis='index')
+    result.dataset_ids = dataset_ids
+
+    return result
+
+
+@plot_measure((AssetClass.Commod,), (AssetType.CommodityNaturalGasHub,), [QueryType.FORWARD_PRICE],
+              display_name='forward_curve')
+def forward_curve_ng(asset: Asset, price_method: str = 'GDD', market_date: str = "", *, source: str = None,
+                     real_time: bool = False) -> pd.Series:
+    """
+    Forward Curve for Us gas Data
+
+    :param asset: asset object loaded from security master
+    :param price_method: Price method for forward curve for us gas eg: GDD
+    :param market_date: Date for which forward curve to be plotted, format-YYYYMMDD: default value = today
+    :param source: name of function caller: default source = None
+    :param real_time: whether to retrieve intraday data instead of EOD: default value = False
+    :return: Term structure or price projection for future contracts for a given date
+    """
+    if real_time:
+        raise MqValueError('Forward Curve uses daily frequency instead of intraday')
+
+    # Validations for date inputs
+    start, end = DataContext.current.start_date, DataContext.current.end_date
+    market_date, start = _get_marketdate_validation(market_date=market_date, start_date=start, end_date=end)
+
+    # Check if market date do not have an entry, a holiday or value not entered yet, if so get prev date value
+    ds = Dataset('COMMOD_US_NG_FORWARD_PRICES')
+    last_data = ds.get_data_last(as_of=market_date)
+    last_date = pd.Timestamp(last_data.index.unique().values[0])
+    if market_date > last_date.date():
+        market_date = last_date
+
+    # Find valid contracts, use until end of month for end date
+    contracts_to_query_df = get_contract_range(start, end, timezone=None)
+    contracts_to_query = contracts_to_query_df['contract_month'].unique().tolist()
+    # Get data for given asset for given market date for valid contracts and buckets
+    where = dict(contract=contracts_to_query, priceMethod=price_method.upper())
+    with DataContext(market_date, market_date):
+        q = GsDataApi.build_market_data_query([asset.get_marquee_id()], QueryType.FORWARD_PRICE,
+                                              where=where, source=None,
+                                              real_time=False)
+        forward_price = _market_data_timed(q)
+        dataset_ids = getattr(forward_price, 'dataset_ids', ())
+
+    # If no data received
+    if forward_price.empty:
+        return ExtendedSeries(dtype=float)
+
+    # Get plot dates for valid contract_months
+    forward_dates_to_plot = dict()
+    for month in contracts_to_query:
+        start_date_month = _string_to_date_interval(month)["start_date"]
+        forward_dates_to_plot[month] = start_date_month
+
+    # Create a dataframe with required columns
+    forward_curve_plot = {'contract': forward_price['contract'],
+                          'forwardPrice': forward_price['forwardPrice'],
+                          'priceMethod': forward_price['priceMethod']}
+    df = pd.DataFrame(forward_curve_plot)
+    df = df.reset_index(drop=True)
 
     # Map contract to plot date and format output
     for row in df.itertuples():
@@ -4569,7 +4659,7 @@ def get_market_data_tasks(asset_ids: List[str],
                           request_id: Optional[str] = None,
                           chunk_size: int = 5,
                           ignore_errors: bool = False,
-                          parallel_pool_size: int = 1) -> list:
+                          parallelize_queries: bool = False) -> list:
     tasks = []
     for i, chunked_assets in enumerate(chunk(asset_ids, chunk_size)):
         queries = GsDataApi.build_market_data_query(
@@ -4578,7 +4668,7 @@ def get_market_data_tasks(asset_ids: List[str],
             where=where,
             source=source,
             real_time=real_time,
-            parallel_pool_size=parallel_pool_size)
+            parallelize_queries=parallelize_queries)
 
         queries = [queries] if not isinstance(queries, list) else queries
         tasks.extend(
@@ -4595,10 +4685,10 @@ def get_historical_and_last_for_measure(asset_ids: List[str],
                                         request_id: Optional[str] = None,
                                         chunk_size: int = 5,
                                         ignore_errors: bool = False,
-                                        parallel_pool_size: int = 1):
+                                        parallelize_queries: bool = False):
     tasks = get_market_data_tasks(asset_ids, query_type, where, source=source, real_time=real_time,
                                   request_id=request_id, chunk_size=chunk_size, ignore_errors=ignore_errors,
-                                  parallel_pool_size=parallel_pool_size)
+                                  parallelize_queries=parallelize_queries)
 
     if not real_time and DataContext.current.end_date >= datetime.date.today():
         where_list = _split_where_conditions(where)

@@ -481,32 +481,6 @@ class GsDataApi(DataApi):
         return d.strftime('%Y-%m-%dT%H:%M:%SZ')
 
     @classmethod
-    def _resolve_default_csa_for_builder(cls, builder):
-        dict_builder = builder.to_dict()
-        properties = dict_builder.get('properties')
-
-        if not properties:
-            return 'USD-1'
-
-        clearing_house = properties.get('clearinghouse')
-
-        if 'payccy' in properties:
-            pay_ccy = properties['payccy']
-            if pay_ccy == 'USD':
-                default_csa = 'USD-SOFR'
-            elif pay_ccy == 'EUR':
-                default_csa = 'EUR-EUROSTR'
-            else:
-                default_csa = pay_ccy + "-1"
-
-            if clearing_house and clearing_house != 'LCH':
-                default_csa = f'CB LCH/{clearing_house.upper()} {default_csa}'
-
-            return default_csa
-        else:
-            return "USD-1"
-
-    @classmethod
     def get_mxapi_curve_measure(cls, curve_type=None, curve_asset=None, curve_point=None, curve_tags=None,
                                 measure=None, start_time=None, end_time=None, request_id=None,
                                 close_location=None, real_time=None) -> pd.DataFrame:
@@ -587,6 +561,70 @@ class GsDataApi(DataApi):
             return df
 
     @classmethod
+    def get_mxapi_vector_measure(cls, curve_type=None, curve_asset=None, curve_point=None, curve_tags=None,
+                                 vector_measure=None, as_of_time=None, request_id=None,
+                                 close_location=None) -> pd.DataFrame:
+        if not vector_measure:
+            raise ValueError("Vector measure must be specified.")
+
+        if not as_of_time:
+            raise ValueError("As-of date or time must be specified.")
+
+        real_time = isinstance(as_of_time, dt.datetime)
+
+        if not real_time and not isinstance(as_of_time, dt.date):
+            raise ValueError("As-of date or time must be specified.")
+
+        if not real_time and not close_location:
+            close_location = 'NYC'
+
+        if real_time:
+            request_dict = {
+                'type': 'MxAPI Curve Request',
+                'modelType': curve_type,
+                'modelAsset': curve_asset,
+                'point': curve_point,
+                'tags': curve_tags,
+                'asOfTime': cls._to_zulu(as_of_time),
+                'curveName': vector_measure
+            }
+        else:
+            request_dict = {
+                'type': 'MxAPI Curve Request EOD',
+                'modelType': curve_type,
+                'modelAsset': curve_asset,
+                'point': curve_point,
+                'tags': curve_tags,
+                'asOfDate': as_of_time.isoformat(),
+                'close': close_location,
+                'curveName': vector_measure
+            }
+
+        url = '/mxapi/mq/curve' if real_time else '/mxapi/mq/curve/eod'
+
+        start = time.perf_counter()
+        try:
+            body = cls._post_with_cache_check(url, payload=request_dict)
+        except Exception as e:
+            log_warning(request_id, _logger, f'Mxapi curve query {request_dict} failed due to {e}')
+            raise e
+        log_debug(request_id, _logger, 'MxAPI curve query (%s) with payload (%s) ran in %.3f ms',
+                  body.get('requestId'), request_dict, (time.perf_counter() - start) * 1000)
+
+        values = body['curve']
+        value_col_name = body['curveName']
+        knots = body['knots']
+        column_name = body['knotType']
+
+        if len(values) == 0 and len(body['errMsg']) > 0:
+            raise RuntimeError(body['errMsg'])
+
+        d = {value_col_name: values, column_name: knots}
+        df = MarketDataResponseFrame(pd.DataFrame(data=d))
+        df = df.set_index(column_name)
+        return df
+
+    @classmethod
     def get_mxapi_backtest_data(cls, builder, start_time=None, end_time=None, num_samples=120,
                                 csa=None, request_id=None, close_location=None, real_time=None) -> pd.DataFrame:
         real_time = real_time or isinstance(start_time, dt.datetime)
@@ -604,7 +642,7 @@ class GsDataApi(DataApi):
                 end_time = DataContext.current.end_date
 
         if not csa:
-            csa = cls._resolve_default_csa_for_builder(builder)
+            csa = 'Default'
 
         if not real_time and not close_location:
             close_location = 'NYC'
@@ -693,15 +731,16 @@ class GsDataApi(DataApi):
                                                    where: Union[FieldFilterMap, Dict] = None,
                                                    source: Union[str] = None,
                                                    real_time: bool = False,
-                                                   measure='Curve',
-                                                   parallel_pool_size: int = 1) -> List[dict]:
-        def chunk_time(start, end, pool_size) -> tuple:
-            chunk_duration = (end - start) / pool_size
-            current = start
-            for _ in range(pool_size):
-                next_end = current + chunk_duration
-                yield current, next_end
-                current = next_end
+                                                   measure='Curve') -> List[dict]:
+        parallel_interval = 365  # chunk over a year
+
+        def chunk_time(start, end) -> tuple:
+            # chunk the time interval into 1 year chunks
+            s = start
+            while s < end:
+                e = min(s + dt.timedelta(days=parallel_interval), end)
+                yield s, e
+                s = e
 
         queries = []
         if real_time:
@@ -711,14 +750,14 @@ class GsDataApi(DataApi):
             start, end = DataContext.current.start_date, DataContext.current.end_date
             start_key, end_key = 'startDate', 'endDate'
 
-        for s, e in chunk_time(start, end, parallel_pool_size):
+        for s, e in chunk_time(start, end):
             inner = copy(GsDataApi._get_market_data_filters(asset_ids, query_type, where, source, real_time, measure))
             inner[start_key], inner[end_key] = s, e
             queries.append({
                 'queries': [inner]
             })
 
-        log_debug("", _logger, f"Created {len(queries)} market data queries. Pool size = {parallel_pool_size}")
+        log_debug("", _logger, f"Created {len(queries)} market data queries")
 
         return queries
 
@@ -729,10 +768,10 @@ class GsDataApi(DataApi):
                                 source: Union[str] = None,
                                 real_time: bool = False,
                                 measure='Curve',
-                                parallel_pool_size: int = 1) -> Union[dict, List[dict]]:
-        if parallel_pool_size > 1:
+                                parallelize_queries: bool = False) -> Union[dict, List[dict]]:
+        if parallelize_queries:
             return GsDataApi.build_interval_chunked_market_data_queries(asset_ids, query_type, where, source, real_time,
-                                                                        measure, parallel_pool_size)
+                                                                        measure)
 
         inner = GsDataApi._get_market_data_filters(asset_ids, query_type, where, source, real_time, measure)
         if DataContext.current.interval is not None:
